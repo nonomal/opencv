@@ -6,6 +6,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/core/utils/logger.hpp>
 
 #include <mutex>
 #include <thread>
@@ -76,7 +77,7 @@ string modelName, framework;
 
 static void preprocess(const Mat& frame, Net& net, Size inpSize);
 
-static void postprocess(Mat& frame, const vector<Mat>& outs, Net& net, int backend, vector<int>& classIds, vector<float>& confidences, vector<Rect>& boxes, const string postprocessing);
+static void postprocess(Mat& frame, const vector<Mat>& outs, Net& net, vector<int>& classIds, vector<float>& confidences, vector<Rect>& boxes, const string postprocessing);
 
 static void drawPred(vector<int>& classIds, vector<float>& confidences, vector<Rect>& boxes, Mat& frame, FontFace& sans, int stdSize, int stdWeight, int stdImgSize, int stdThickness);
 
@@ -161,6 +162,8 @@ private:
 
 int main(int argc, char** argv)
 {
+    utils::logging::setLogLevel(utils::logging::LOG_LEVEL_INFO);
+
     CommandLineParser parser(argc, argv, keys);
 
     string zooFile = parser.get<String>("zoo");
@@ -217,14 +220,12 @@ int main(int argc, char** argv)
         }
     }
     //![read_net]
-    EngineType engine = ENGINE_AUTO;
-    if ((parser.get<String>("backend") != "default") || (parser.get<String>("target") != "cpu")){
-        engine = ENGINE_CLASSIC;
-    }
+    EngineType engine = ENGINE_OPENCV;
     Net net = readNet(modelPath, configPath, "", engine);
     int backend = getBackendID(parser.get<String>("backend"));
     net.setPreferableBackend(backend);
     net.setPreferableTarget(getTargetID(parser.get<String>("target")));
+    net.setProfilingMode(DNN_PROFILE_SUMMARY);
     //![read_net]
 
     // Create a window
@@ -302,6 +303,7 @@ int main(int argc, char** argv)
                         //![forward]
                         vector<Mat> outs;
                         net.forward(outs, net.getUnconnectedOutLayersNames());
+                        net.printPerfProfile();
                         predictionsQueue.push(outs);
                         //![forward]
                     }
@@ -329,7 +331,7 @@ int main(int argc, char** argv)
             classIds.clear();
             confidences.clear();
             boxes.clear();
-            postprocess(frame, outs, net, backend, classIds, confidences, boxes, postprocessing);
+            postprocess(frame, outs, net, classIds, confidences, boxes, postprocessing);
 
             drawPred(classIds, confidences, boxes, frame, sans, stdSize, stdWeight, stdImgSize, stdThickness);
 
@@ -367,24 +369,25 @@ int main(int argc, char** argv)
             }
             preprocess(frame, net, Size(inpWidth, inpHeight));
 
+            TickMeter tickMeter;
             vector<Mat> outs;
+            tickMeter.start();
             net.forward(outs, net.getUnconnectedOutLayersNames());
+            tickMeter.stop();
+            net.printPerfProfile();
 
             classIds.clear();
             confidences.clear();
             boxes.clear();
 
-            postprocess(frame, outs, net, backend, classIds, confidences, boxes, postprocessing);
+            postprocess(frame, outs, net, classIds, confidences, boxes, postprocessing);
 
             drawPred(classIds, confidences, boxes, frame, sans, stdSize, stdWeight, stdImgSize, stdThickness);
 
-            vector<double> layersTimes;
             int imgWidth = max(frame.rows, frame.cols);
             int size = static_cast<int>((stdSize * imgWidth) / (stdImgSize * 1.5));
             int weight = static_cast<int>((stdWeight * imgWidth) / (stdImgSize * 1.5));
-            double freq = getTickFrequency() / 1000;
-            double t = net.getPerfProfile(layersTimes) / freq;
-            string label = format("FPS: %.2f", 1000/t);
+            string label = format("FPS: %.2f", 1000.0 / tickMeter.getTimeMilli());
             putText(frame, label, Point(0, size), Scalar(0, 255, 0), sans, size, weight);
             imshow(kWinName, frame);
         }
@@ -398,10 +401,7 @@ void preprocess(const Mat& frame, Net& net, Size inpSize)
 
     // Prepare the blob from the image
     Mat inp;
-    if(framework == "weights"){ // checks whether model is darknet
-        blobFromImage(frame, inp, scale, size, meanv, swapRB, false, CV_32F);
-    }
-    else{
+    {
         //![preprocess_call]
         Image2BlobParams imgParams(
             Scalar::all(scale),
@@ -507,7 +507,7 @@ void yoloPostProcessing(
     }
 }
 
-void postprocess(Mat& frame, const vector<Mat>& outs, Net& net, int backend, vector<int>& classIds, vector<float>& confidences, vector<Rect>& boxes, const string postprocessing)
+void postprocess(Mat& frame, const vector<Mat>& outs, Net& net, vector<int>& classIds, vector<float>& confidences, vector<Rect>& boxes, const string postprocessing)
 {
     static vector<int> outLayers = net.getUnconnectedOutLayers();
     if (postprocessing == "ssd")
@@ -546,35 +546,36 @@ void postprocess(Mat& frame, const vector<Mat>& outs, Net& net, int backend, vec
             }
         }
     }
-    else if (postprocessing == "darknet")
+    else if (postprocessing == "yolov4")
     {
-        for (size_t i = 0; i < outs.size(); ++i)
         {
-            // Network produces output blob with a shape NxC where N is a number of
-            // detected objects and C is a number of classes + 4 where the first 4
-            // numbers are [center_x, center_y, width, height]
-            float* data = (float*)outs[i].data;
-            for (int j = 0; j < outs[i].rows; ++j, data += outs[i].cols)
+            Mat boxesMat = outs[0];
+            Mat confsMat = outs[1];
+            int numBoxes = (int)(boxesMat.total() / 4);
+            boxesMat = boxesMat.reshape(1, numBoxes);
+            confsMat = confsMat.reshape(1, numBoxes);
+            for (int j = 0; j < numBoxes; ++j)
             {
-                Mat scores = outs[i].row(j).colRange(5, outs[i].cols);
-                Point classIdPoint;
+                Point maxLoc;
                 double confidence;
-                minMaxLoc(scores, 0, &confidence, 0, &classIdPoint);
+                minMaxLoc(confsMat.row(j), 0, &confidence, 0, &maxLoc);
                 if (confidence > confThreshold)
                 {
-                    int centerX = (int)(data[0] * frame.cols);
-                    int centerY = (int)(data[1] * frame.rows);
-                    int width = (int)(data[2] * frame.cols);
-                    int height = (int)(data[3] * frame.rows);
-                    int left = centerX - width / 2;
-                    int top = centerY - height / 2;
-
-                    classIds.push_back(classIdPoint.x);
+                    const float* box = boxesMat.ptr<float>(j);
+                    boxes.push_back(Rect((int)(box[0] * inpWidth), (int)(box[1] * inpHeight),
+                                         (int)((box[2] - box[0]) * inpWidth), (int)((box[3] - box[1]) * inpHeight)));
                     confidences.push_back((float)confidence);
-                    boxes.push_back(Rect(left, top, width, height));
+                    classIds.push_back(maxLoc.x);
                 }
             }
         }
+        Image2BlobParams paramNet;
+        paramNet.scalefactor = Scalar::all(scale);
+        paramNet.size = Size(inpWidth, inpHeight);
+        paramNet.mean = meanv;
+        paramNet.swapRB = swapRB;
+        paramNet.paddingmode = paddingMode;
+        paramNet.blobRectsToImageRects(boxes, boxes, frame.size());
     }
     else if (postprocessing == "yolov8" || postprocessing == "yolov5")
     {
@@ -614,7 +615,7 @@ void postprocess(Mat& frame, const vector<Mat>& outs, Net& net, int backend, vec
 
     // NMS is used inside Region layer only on DNN_BACKEND_OPENCV for other backends we need NMS in sample
     // or NMS is required if the number of outputs > 1
-    if (outLayers.size() > 1 || (postprocessing == "darknet" && backend != DNN_BACKEND_OPENCV))
+    if (outLayers.size() > 1)
     {
         map<int, vector<size_t> > class2indices;
         for (size_t i = 0; i < classIds.size(); i++)

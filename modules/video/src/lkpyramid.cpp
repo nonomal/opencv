@@ -12,6 +12,7 @@
 //
 // Copyright (C) 2000, Intel Corporation, all rights reserved.
 // Copyright (C) 2013, OpenCV Foundation, all rights reserved.
+// Copyright (C) 2026, Advanced Micro Devices, Inc., all rights reserved.
 // Third party copyrights are property of their respective owners.
 //
 // Redistribution and use in source and binary forms, with or without modification,
@@ -45,8 +46,8 @@
 #include "lkpyramid.hpp"
 #include "opencl_kernels_video.hpp"
 #include "opencv2/core/hal/intrin.hpp"
-#ifdef HAVE_OPENCV_3D
-#include "opencv2/3d.hpp"
+#ifdef HAVE_OPENCV_GEOMETRY
+#include "opencv2/geometry.hpp"
 #endif
 
 #include "hal_replacement.hpp"
@@ -72,85 +73,7 @@ static void calcScharrDeriv(const cv::Mat& src, cv::Mat& dst)
 
 void cv::detail::ScharrDerivInvoker::operator()(const Range& range) const
 {
-    using cv::detail::deriv_type;
-    int rows = src.rows, cols = src.cols, cn = src.channels(), colsn = cols*cn;
-
-    int x, y, delta = (int)alignSize((cols + 2)*cn, 16);
-    AutoBuffer<deriv_type> _tempBuf(delta*2 + 64);
-    deriv_type *trow0 = alignPtr(_tempBuf.data() + cn, 16), *trow1 = alignPtr(trow0 + delta, 16);
-
-#if CV_SIMD128
-    v_int16x8 c3 = v_setall_s16(3), c10 = v_setall_s16(10);
-#endif
-
-    for( y = range.start; y < range.end; y++ )
-    {
-        const uchar* srow0 = src.ptr<uchar>(y > 0 ? y-1 : rows > 1 ? 1 : 0);
-        const uchar* srow1 = src.ptr<uchar>(y);
-        const uchar* srow2 = src.ptr<uchar>(y < rows-1 ? y+1 : rows > 1 ? rows-2 : 0);
-        deriv_type* drow = (deriv_type *)dst.ptr<deriv_type>(y);
-
-        // do vertical convolution
-        x = 0;
-#if CV_SIMD128
-        {
-            for( ; x <= colsn - 8; x += 8 )
-            {
-                v_int16x8 s0 = v_reinterpret_as_s16(v_load_expand(srow0 + x));
-                v_int16x8 s1 = v_reinterpret_as_s16(v_load_expand(srow1 + x));
-                v_int16x8 s2 = v_reinterpret_as_s16(v_load_expand(srow2 + x));
-
-                v_int16x8 t1 = v_sub(s2, s0);
-                v_int16x8 t0 = v_add(v_mul_wrap(v_add(s0, s2), c3), v_mul_wrap(s1, c10));
-
-                v_store(trow0 + x, t0);
-                v_store(trow1 + x, t1);
-            }
-        }
-#endif
-
-        for( ; x < colsn; x++ )
-        {
-            int t0 = (srow0[x] + srow2[x])*3 + srow1[x]*10;
-            int t1 = srow2[x] - srow0[x];
-            trow0[x] = (deriv_type)t0;
-            trow1[x] = (deriv_type)t1;
-        }
-
-        // make border
-        int x0 = (cols > 1 ? 1 : 0)*cn, x1 = (cols > 1 ? cols-2 : 0)*cn;
-        for( int k = 0; k < cn; k++ )
-        {
-            trow0[-cn + k] = trow0[x0 + k]; trow0[colsn + k] = trow0[x1 + k];
-            trow1[-cn + k] = trow1[x0 + k]; trow1[colsn + k] = trow1[x1 + k];
-        }
-
-        // do horizontal convolution, interleave the results and store them to dst
-        x = 0;
-#if CV_SIMD128
-        {
-            for( ; x <= colsn - 8; x += 8 )
-            {
-                v_int16x8 s0 = v_load(trow0 + x - cn);
-                v_int16x8 s1 = v_load(trow0 + x + cn);
-                v_int16x8 s2 = v_load(trow1 + x - cn);
-                v_int16x8 s3 = v_load(trow1 + x);
-                v_int16x8 s4 = v_load(trow1 + x + cn);
-
-                v_int16x8 t0 = v_sub(s1, s0);
-                v_int16x8 t1 = v_add(v_mul_wrap(v_add(s2, s4), c3), v_mul_wrap(s3, c10));
-
-                v_store_interleave((drow + x*2), t0, t1);
-            }
-        }
-#endif
-        for( ; x < colsn; x++ )
-        {
-            deriv_type t0 = (deriv_type)(trow0[x+cn] - trow0[x-cn]);
-            deriv_type t1 = (deriv_type)((trow1[x+cn] + trow1[x-cn])*3 + trow1[x]*10);
-            drow[x*2] = t0; drow[x*2+1] = t1;
-        }
-    }
+    ScharrDerivInvoker_impl(src, const_cast<Mat&>(dst), range);
 }
 
 cv::detail::LKTrackerInvoker::LKTrackerInvoker(
@@ -546,6 +469,10 @@ void cv::detail::LKTrackerInvoker::operator()(const Range& range) const
             const int16x4_t d28_2 = vdup_n_s16((int16_t)iw10);
             const int16x4_t d29_2 = vdup_n_s16((int16_t)iw11);
 
+#elif CV_RVV
+            const size_t rvv_lanes = __riscv_vsetvlmax_e16m1();
+            vfloat32m2_t rvvB1 = __riscv_vfmv_v_f_f32m2(0.f, rvv_lanes);
+            vfloat32m2_t rvvB2 = __riscv_vfmv_v_f_f32m2(0.f, rvv_lanes);
 #endif
 
             for( y = 0; y < winSize.height; y++ )
@@ -655,6 +582,61 @@ void cv::detail::LKTrackerInvoker::operator()(const Range& range) const
                     vst1q_f32(nB1, nB1v);
                     vst1q_f32(nB2, nB2v);
                 }
+#elif CV_RVV
+                for( ; x < winSize.width*cn; )
+                {
+                    const size_t vl = __riscv_vsetvl_e16m1(winSize.width*cn - x);
+
+                    vuint16m1_t j00 = __riscv_vwcvtu_x_x_v_u16m1(
+                            __riscv_vle8_v_u8mf2(Jptr + x, vl), vl);
+                    vint32m2_t interp = __riscv_vwmul_vx_i32m2(
+                            __riscv_vreinterpret_i16m1(j00), (int16_t)iw00, vl);
+
+                    vuint16m1_t j01 = __riscv_vwcvtu_x_x_v_u16m1(
+                            __riscv_vle8_v_u8mf2(Jptr + x + cn, vl), vl);
+                    interp = __riscv_vwmacc_vx_i32m2(
+                            interp, (int16_t)iw01, __riscv_vreinterpret_i16m1(j01), vl);
+
+                    vuint16m1_t j10 = __riscv_vwcvtu_x_x_v_u16m1(
+                            __riscv_vle8_v_u8mf2(Jptr + x + stepJ, vl), vl);
+                    interp = __riscv_vwmacc_vx_i32m2(
+                            interp, (int16_t)iw10, __riscv_vreinterpret_i16m1(j10), vl);
+
+                    vuint16m1_t j11 = __riscv_vwcvtu_x_x_v_u16m1(
+                            __riscv_vle8_v_u8mf2(Jptr + x + stepJ + cn, vl), vl);
+                    interp = __riscv_vwmacc_vx_i32m2(
+                            interp, (int16_t)iw11, __riscv_vreinterpret_i16m1(j11), vl);
+
+                    interp = __riscv_vsra_vx_i32m2(
+                            __riscv_vadd_vx_i32m2(
+                                    interp, 1 << (W_BITS1 - 5 - 1), vl),
+                            W_BITS1 - 5, vl);
+                    vint32m2_t diff = __riscv_vsub_vv_i32m2(
+                            interp,
+                            __riscv_vwcvt_x_x_v_i32m2(
+                                    __riscv_vle16_v_i16m1(Iptr + x, vl), vl),
+                            vl);
+
+                    vint16m1x2_t gradient = __riscv_vlseg2e16_v_i16m1x2(dIptr, vl);
+                    vint32m2_t ix = __riscv_vwcvt_x_x_v_i32m2(
+                            __riscv_vget_v_i16m1x2_i16m1(gradient, 0), vl);
+                    vint32m2_t iy = __riscv_vwcvt_x_x_v_i32m2(
+                            __riscv_vget_v_i16m1x2_i16m1(gradient, 1), vl);
+
+                    rvvB1 = __riscv_vfadd_tu(
+                            rvvB1, rvvB1,
+                            __riscv_vfcvt_f_x_v_f32m2(
+                                    __riscv_vmul_vv_i32m2(diff, ix, vl), vl),
+                            vl);
+                    rvvB2 = __riscv_vfadd_tu(
+                            rvvB2, rvvB2,
+                            __riscv_vfcvt_f_x_v_f32m2(
+                                    __riscv_vmul_vv_i32m2(diff, iy, vl), vl),
+                            vl);
+
+                    x += (int)vl;
+                    dIptr += vl*2;
+                }
 #endif
 
                 for( ; x < winSize.width*cn; x++, dIptr += 2 )
@@ -678,6 +660,12 @@ void cv::detail::LKTrackerInvoker::operator()(const Range& range) const
 
             ib1 += (float)(nB1[0] + nB1[1] + nB1[2] + nB1[3]);
             ib2 += (float)(nB2[0] + nB2[1] + nB2[2] + nB2[3]);
+#elif CV_RVV
+            vfloat32m1_t rvvZero = __riscv_vfmv_v_f_f32m1(0.f, 1);
+            ib1 += __riscv_vfmv_f_s_f32m1_f32(
+                    __riscv_vfredusum_vs_f32m2_f32m1(rvvB1, rvvZero, rvv_lanes));
+            ib2 += __riscv_vfmv_f_s_f32m1_f32(
+                    __riscv_vfredusum_vs_f32m2_f32m1(rvvB2, rvvZero, rvv_lanes));
 #endif
 
             b1 = ib1*FLT_SCALE;
@@ -1290,9 +1278,9 @@ void cv::calcOpticalFlowPyrLK( InputArray _prevImg, InputArray _nextImg,
 cv::Mat cv::estimateRigidTransform( InputArray src1, InputArray src2, bool fullAffine )
 {
     CV_INSTRUMENT_REGION();
-#ifndef HAVE_OPENCV_3D
+#ifndef HAVE_OPENCV_GEOMETRY
     CV_UNUSED(src1); CV_UNUSED(src2); CV_UNUSED(fullAffine);
-    CV_Error(Error::StsError, "estimateRigidTransform requires 3d module");
+    CV_Error(Error::StsError, "estimateRigidTransform requires geometry module");
 #else
     Mat A = src1.getMat(), B = src2.getMat();
 

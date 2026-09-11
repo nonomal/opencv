@@ -131,6 +131,23 @@ void Net::setPreferableTarget(int targetId)
     return impl->setPreferableTarget(targetId);
 }
 
+void Net::finalizeNet()
+{
+    CV_TRACE_FUNCTION();
+    CV_Assert(impl);
+#ifdef HAVE_ONNXRUNTIME
+    if (impl->useOrtEngine && impl->mainGraph && impl->modelFormat == DNN_MODEL_ONNX && !impl->modelFileName.empty())
+    {
+        impl->finalizeOrt();
+        return;
+    }
+#endif
+    // New graph engine: explicitly select per-op executors for the chosen backend/target now,
+    // so the first forward() isn't slowed by it.
+    if (impl->mainGraph)
+        impl->finalize();
+}
+
 void Net::setInputsNames(const std::vector<String>& inputBlobNames)
 {
     CV_TRACE_FUNCTION();
@@ -163,6 +180,12 @@ void Net::setParam(int layer, int numParam, const Mat& blob)
 {
     CV_Assert(impl);
     return impl->setParam(layer, numParam, blob);
+}
+
+void Net::setParam(const String& name, int numParam, const Mat& blob)
+{
+    CV_Assert(impl);
+    return impl->setParam(name, numParam, blob);
 }
 
 int Net::getLayerId(const String& layer) const
@@ -427,6 +450,20 @@ int64 Net::getPerfProfile(std::vector<double>& timings)
     return impl->getPerfProfile(timings);
 }
 
+void Net::getPerfProfile(std::vector<std::string>& names,
+                         std::vector<std::string>& timems,
+                         std::vector<std::string>& counts) const
+{
+    CV_Assert(impl);
+    impl->getPerfProfile(names, timems, counts);
+}
+
+void Net::printPerfProfile() const
+{
+    CV_Assert(impl);
+    impl->printPerfProfile();
+}
+
 bool Net::isConstArg(Arg arg) const
 {
     return argKind(arg) == DNN_ARG_CONST;
@@ -459,6 +496,43 @@ bool Net::haveArg(const std::string& name) const
     CV_Assert(impl);
     return impl->haveArg(name);
 }
+
+void Net::enableKVCache()
+{
+    CV_Assert(impl);
+    setKVCacheManager(impl);
+}
+
+void Net::disableKVCache()
+{
+    CV_Assert(impl);
+    impl->kvCacheManager = KVCacheManager();
+}
+
+void Net::resetKVCache()
+{
+    CV_Assert(impl);
+    setKVCacheManager(impl);
+}
+
+void Net::reserveKVCache(int maxSequenceLength)
+{
+    CV_Assert(impl);
+    CV_CheckTrue(impl->useKVCache && impl->kvCacheManager.isInitialized,
+                 "reserveKVCache() requires enableKVCache() to be called first");
+    CV_CheckGE(maxSequenceLength, 0, "maxSequenceLength must be non-negative");
+    CV_CheckLE(maxSequenceLength, KV_CACHE_MAX_RESERVED_TOKENS,
+               "maxSequenceLength is unreasonably large");
+    if (impl->kvCacheManager.empty())
+    {
+        CV_LOG_WARNING(NULL, "DNN: reserveKVCache() has no effect, the model has no paged attention "
+                             "layers (no Attention/MultiHeadAttention/GroupQueryAttention op was imported). "
+                             "Only the present.* -> past_key_values.* routing is active.");
+        return;
+    }
+    impl->kvCacheManager.reserve(maxSequenceLength);
+}
+
 
 Ptr<Graph> Net::getMainGraph() const
 {

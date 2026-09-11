@@ -7,11 +7,12 @@
 #include <opencv2/core.hpp>
 #include <opencv2/core/utility.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/3d.hpp>
+#include <opencv2/geometry.hpp>
 #include <opencv2/calib.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/objdetect.hpp>
 #include "opencv2/objdetect/charuco_detector.hpp"
 
 using namespace cv;
@@ -340,6 +341,7 @@ int main(int argc, char* argv[])
             else if (s.arucoDictName == "DICT_APRILTAG_25h9") { arucoDict = cv::aruco::DICT_APRILTAG_25h9; }
             else if (s.arucoDictName == "DICT_APRILTAG_36h10") { arucoDict = cv::aruco::DICT_APRILTAG_36h10; }
             else if (s.arucoDictName == "DICT_APRILTAG_36h11") { arucoDict = cv::aruco::DICT_APRILTAG_36h11; }
+            else if (s.arucoDictName == "DICT_ARUCO_MIP_36h12") { arucoDict = cv::aruco::DICT_ARUCO_MIP_36h12; }
             else {
                 cout << "incorrect name of aruco dictionary \n";
                 return 1;

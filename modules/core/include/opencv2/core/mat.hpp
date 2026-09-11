@@ -54,6 +54,7 @@
 #include "opencv2/core/bufferpool.hpp"
 
 #include <array>
+#include <functional>
 #include <type_traits>
 
 namespace cv
@@ -152,14 +153,15 @@ struct CV_EXPORTS_W_SIMPLE MatShape
     int& operator [](size_t idx);
     Size operator()() const; // for compatibility with MatSize
 
+    CV_WRAP int channels() const; // returns the number of channels
+
     CV_WRAP bool hasSymbols() const; // negative elements in the shape may denote 'symbols' instead of actual values.
 
     // compute shape of the result with possible broadcasting
     CV_WRAP MatShape expand(const MatShape& another) const;
 
-    // convert shape to/from block layout
-    CV_WRAP MatShape toBlock(int C0) const;
-    CV_WRAP MatShape fromBlock(DataLayout newLayout) const;
+    // convert shape between layouts
+    CV_WRAP MatShape toLayout(DataLayout newLayout, int C0=0) const;
 
     size_t total() const; // returns the total number of elements in the tensor (including padding elements, i.e. the method ignores 'C' in the case of block layout). Returns 1 for scalar tensors. Returns 0 for empty shapes.
 
@@ -574,11 +576,11 @@ public:
 };
 
 /** Helper to wrap custom types. @see InputArray */
-template<typename _Tp> static inline _InputArray rawIn(_Tp& v);
+template<typename _Tp> inline _InputArray rawIn(_Tp& v);
 /** Helper to wrap custom types. @see InputArray */
-template<typename _Tp> static inline _OutputArray rawOut(_Tp& v);
+template<typename _Tp> inline _OutputArray rawOut(_Tp& v);
 /** Helper to wrap custom types. @see InputArray */
-template<typename _Tp> static inline _InputOutputArray rawInOut(_Tp& v);
+template<typename _Tp> inline _InputOutputArray rawInOut(_Tp& v);
 
 CV__DEBUG_NS_END
 
@@ -678,6 +680,14 @@ public:
  \code
  double angle = 30, a = cos(angle*CV_PI/180), b = sin(angle*CV_PI/180);
  Mat R = (Mat_<double>(2,2) << a, -b, b, a);
+ \endcode
+
+ \deprecated Use constructors with std::initializer_list instead:
+ \code
+ Mat_<int> m1({1, 2, 3, 4}); // 4x1 Mat
+ Mat_<uchar> m2({2, 3}, {1, 2, 3, 4, 5, 6}); // 2x3 Mat
+
+ Mat_<double> R({2, 2}, {a, -b, b, a}); // from example
  \endcode
 */
 template<typename _Tp> class MatCommaInitializer_
@@ -1260,7 +1270,7 @@ public:
 
     /** @overload
     */
-    template<typename _Tp> explicit Mat(const MatCommaInitializer_<_Tp>& commaInitializer);
+    template<typename _Tp> CV_DEPRECATED_EXTERNAL explicit Mat(const MatCommaInitializer_<_Tp>& commaInitializer);
 
     //! download data from GpuMat
     explicit Mat(const cuda::GpuMat& m);
@@ -1549,15 +1559,15 @@ public:
 
     /** @overload
      * @param cn New number of channels. If the parameter is 0, the number of channels remains the same.
-     * @param newndims New number of dimentions.
-     * @param newsz Array with new matrix size by all dimentions. If some sizes are zero,
+     * @param newndims New number of dimensions.
+     * @param newsz Array with new matrix size by all dimensions. If some sizes are zero,
      * the original sizes in those dimensions are presumed.
      */
     Mat reshape(int cn, int newndims, const int* newsz) const;
 
     /** @overload
      * @param cn New number of channels. If the parameter is 0, the number of channels remains the same.
-     * @param newshape Vector with new matrix size by all dimentions. If some sizes are zero,
+     * @param newshape Vector with new matrix size by all dimensions. If some sizes are zero,
      * the original sizes in those dimensions are presumed.
      */
     Mat reshape(int cn, const std::vector<int>& newshape) const;
@@ -2617,7 +2627,7 @@ public:
     template<int m, int n> explicit Mat_(const Matx<typename DataType<_Tp>::channel_type, m, n>& mtx, bool copyData=true);
     explicit Mat_(const Point_<typename DataType<_Tp>::channel_type>& pt, bool copyData=true);
     explicit Mat_(const Point3_<typename DataType<_Tp>::channel_type>& pt, bool copyData=true);
-    explicit Mat_(const MatCommaInitializer_<_Tp>& commaInitializer);
+    CV_DEPRECATED_EXTERNAL explicit Mat_(const MatCommaInitializer_<_Tp>& commaInitializer);
 
     Mat_(std::initializer_list<_Tp> values);
     explicit Mat_(const std::initializer_list<int> sizes, const std::initializer_list<_Tp> values);
@@ -2775,7 +2785,31 @@ typedef Mat_<Vec2d> Mat2d;
 typedef Mat_<Vec3d> Mat3d;
 typedef Mat_<Vec4d> Mat4d;
 
-/** @todo document */
+/** @brief Matrix class whose data may reside outside host memory. \anchor UMat_Details
+
+UMat repeats the Mat interface, but the buffer is owned by a MatAllocator, and it is the
+allocator that decides where the data physically resides: in host memory, in an OpenCL
+device buffer (see cv::ocl::getOpenCLAllocator) or in CUDA device memory (see
+cv::cuda::getCudaAllocator). Headers, reference counting, ROIs and submatrices and
+n-dimensional shapes behave as they do in Mat.
+
+Passing UMat instead of Mat to a cv:: function is the basis of the Transparent API
+(T-API). The dispatch is not keyed on the allocator: a cv:: call takes its OpenCL branch
+when OpenCL is active and the arguments are UMat objects, and otherwise maps the data
+back to host memory and runs the CPU implementation. UMat has no `data` pointer and no
+element accessors, because there may be no host address to expose; host access goes
+through UMat::getMat.
+
+@note
+  A non-default allocator must be assigned to @ref cv::UMat::allocator "UMat::allocator"
+  before the data is allocated. OpenCL is the only allocator with accelerated cv::
+  implementations, and because the T-API branch tests only whether OpenCL is active, a
+  UMat backed by any other device allocator must not be passed to cv:: functions while
+  OpenCL is enabled.
+
+@sa Mat, MatAllocator, UMatUsageFlags, cv::ocl::getOpenCLAllocator,
+cv::cuda::getCudaAllocator
+*/
 class CV_EXPORTS UMat
 {
 public:
@@ -2809,6 +2843,14 @@ public:
     //! assignment operators
     UMat& operator = (const UMat& m);
 
+    /** @brief Returns a Mat header giving host access to the same data
+    @note
+      The data is mapped into host memory on the first such view and unmapped when the
+      returned Mat is destroyed. @p flags is widened to ACCESS_RW internally, so the
+      mapping is always read-write and the allocator may write back even after
+      read-only use.
+    @param flags combination of AccessFlag values
+    */
     Mat getMat(AccessFlag flags) const;
 
     //! returns a new matrix header for the specified row
@@ -2952,7 +2994,9 @@ public:
     UMat(UMat&& m);
     UMat& operator = (UMat&& m);
 
-    /*! Returns the OpenCL buffer handle on which UMat operates on.
+    /*! Returns the device buffer handle on which UMat operates on.
+        The concrete type depends on the allocator: a `cl_mem` for the OpenCL allocator,
+        a CUDA device pointer for cv::cuda::getCudaAllocator().
         The UMat instance should be kept alive during the use of the handle to prevent the buffer to be
         returned to the OpenCV buffer pool.
      */
@@ -2979,7 +3023,7 @@ public:
     //! number of columns in the matrix; -1 when the matrix has more than 2 dimensions
     int cols;
 
-    //! custom allocator
+    //! custom allocator; assign before the data is allocated, see @ref UMat_Details
     MatAllocator* allocator;
 
     //! usage flags for allocator; recommend do not set directly, instead set during construct/create/getUMat
@@ -3848,6 +3892,66 @@ protected:
 };
 
 
+/////////////////////////////////// BroadcastOp //////////////////////////////////////
+
+/** @brief Op-agnostic driver for a broadcasting element-wise traversal.
+
+BroadcastOp takes a flat list of operand Mats (it does NOT distinguish inputs from outputs), computes
+the numpy-broadcast iteration space over all of them (channels = innermost dim), partitions it into
+tasks, runs them with parallel_for_, and for each tile hands the per-operand slices to a `body`
+callback. Everything semantic - which array is the output, which kernels run, temp buffers - lives in
+`body`. For a cv::Mat the innermost axis is always contiguous, so after dimension collapse every
+operand's innermost step is in {0,1} (1 = contiguous, 0 = broadcast-scalar) - there is no gather case.
+*/
+struct BroadcastOp
+{
+    //! One operand's slice for the current tile: base pointer + steps in ELEMENTS. stepx in {0,1}
+    //! (1 = contiguous along width, 0 = broadcast-scalar); stepy = step between the `height` rows
+    //! (0 = broadcast). ptr is non-const so the body can write the operand(s) it treats as outputs.
+    struct Slice
+    {
+        void*  ptr   = nullptr;
+        size_t stepy = 0;
+        size_t stepx = 0;
+    };
+
+    //! One 2D tile handed to the body. slices[k] corresponds to arrays[k] (same order); the body reads
+    //! width/height and the per-operand slices and owns all interpretation.
+    struct Tile
+    {
+        int width  = 0;                //!< innermost tile extent (elements)
+        int height = 0;                //!< 2nd-innermost extent (1 unless a 2D tile is handed out)
+        int narrays = 0;
+        const Slice* slices = nullptr; //!< [narrays], valid for the duration of the body call
+    };
+
+    /** @brief Drive a broadcasting element-wise traversal.
+    @param arrays   pointers to the operand Mats (inputs AND outputs, undistinguished); the iteration
+                    space is the numpy-broadcast of all their shapes (channels innermost). Headers must
+                    stay alive for the call - no Mat copies are made.
+    @param narrays  number of operands.
+    @param body     invoked once per tile with that tile's per-operand slices; runs the prepared program.
+                    Per-thread scratch is just locals in the body (declared per call => thread-safe).
+    @param expandChannels  true => channels are an explicit innermost iteration dim, so the body always
+                    sees single-channel data (1<->N channel broadcast handled geometrically). false =>
+                    channels stay folded into the element (esz = full elemSize); the body handles them.
+    @param nstripes parallel_for_ work hint; 0 => derive from the shapes (assuming ~100 cycles/element).
+    */
+    CV_EXPORTS static void run(const Mat* const* arrays, int narrays,
+                               const std::function<void(const Tile&)>& body,
+                               bool expandChannels = false,
+                               double nstripes = 0.);
+};
+
+//! Free-function shorthand for BroadcastOp::run (see BroadcastOp).
+inline void broadcastOp(const Mat* const* arrays, int narrays,
+                        const std::function<void(const BroadcastOp::Tile&)>& body,
+                        bool expandChannels = false,
+                        double nstripes = 0.)
+{
+    BroadcastOp::run(arrays, narrays, body, expandChannels, nstripes);
+}
+
 
 ///////////////////////////////// Matrix Expressions /////////////////////////////////
 
@@ -3989,9 +4093,9 @@ CV_EXPORTS MatExpr operator + (const Mat& m, const MatExpr& e);
 CV_EXPORTS MatExpr operator + (const MatExpr& e, const Scalar& s);
 CV_EXPORTS MatExpr operator + (const Scalar& s, const MatExpr& e);
 CV_EXPORTS MatExpr operator + (const MatExpr& e1, const MatExpr& e2);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator + (const Mat& a, const Matx<_Tp, m, n>& b) { return a + Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator + (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) + b; }
 
 CV_EXPORTS MatExpr operator - (const Mat& a, const Mat& b);
@@ -4002,9 +4106,9 @@ CV_EXPORTS MatExpr operator - (const Mat& m, const MatExpr& e);
 CV_EXPORTS MatExpr operator - (const MatExpr& e, const Scalar& s);
 CV_EXPORTS MatExpr operator - (const Scalar& s, const MatExpr& e);
 CV_EXPORTS MatExpr operator - (const MatExpr& e1, const MatExpr& e2);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator - (const Mat& a, const Matx<_Tp, m, n>& b) { return a - Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator - (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) - b; }
 
 CV_EXPORTS MatExpr operator - (const Mat& m);
@@ -4018,9 +4122,9 @@ CV_EXPORTS MatExpr operator * (const Mat& m, const MatExpr& e);
 CV_EXPORTS MatExpr operator * (const MatExpr& e, double s);
 CV_EXPORTS MatExpr operator * (double s, const MatExpr& e);
 CV_EXPORTS MatExpr operator * (const MatExpr& e1, const MatExpr& e2);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator * (const Mat& a, const Matx<_Tp, m, n>& b) { return a * Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator * (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) * b; }
 
 CV_EXPORTS MatExpr operator / (const Mat& a, const Mat& b);
@@ -4031,81 +4135,81 @@ CV_EXPORTS MatExpr operator / (const Mat& m, const MatExpr& e);
 CV_EXPORTS MatExpr operator / (const MatExpr& e, double s);
 CV_EXPORTS MatExpr operator / (double s, const MatExpr& e);
 CV_EXPORTS MatExpr operator / (const MatExpr& e1, const MatExpr& e2);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator / (const Mat& a, const Matx<_Tp, m, n>& b) { return a / Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator / (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) / b; }
 
 CV_EXPORTS MatExpr operator < (const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr operator < (const Mat& a, double s);
 CV_EXPORTS MatExpr operator < (double s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator < (const Mat& a, const Matx<_Tp, m, n>& b) { return a < Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator < (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) < b; }
 
 CV_EXPORTS MatExpr operator <= (const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr operator <= (const Mat& a, double s);
 CV_EXPORTS MatExpr operator <= (double s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator <= (const Mat& a, const Matx<_Tp, m, n>& b) { return a <= Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator <= (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) <= b; }
 
 CV_EXPORTS MatExpr operator == (const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr operator == (const Mat& a, double s);
 CV_EXPORTS MatExpr operator == (double s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator == (const Mat& a, const Matx<_Tp, m, n>& b) { return a == Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator == (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) == b; }
 
 CV_EXPORTS MatExpr operator != (const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr operator != (const Mat& a, double s);
 CV_EXPORTS MatExpr operator != (double s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator != (const Mat& a, const Matx<_Tp, m, n>& b) { return a != Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator != (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) != b; }
 
 CV_EXPORTS MatExpr operator >= (const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr operator >= (const Mat& a, double s);
 CV_EXPORTS MatExpr operator >= (double s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator >= (const Mat& a, const Matx<_Tp, m, n>& b) { return a >= Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator >= (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) >= b; }
 
 CV_EXPORTS MatExpr operator > (const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr operator > (const Mat& a, double s);
 CV_EXPORTS MatExpr operator > (double s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator > (const Mat& a, const Matx<_Tp, m, n>& b) { return a > Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator > (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) > b; }
 
 CV_EXPORTS MatExpr operator & (const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr operator & (const Mat& a, const Scalar& s);
 CV_EXPORTS MatExpr operator & (const Scalar& s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator & (const Mat& a, const Matx<_Tp, m, n>& b) { return a & Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator & (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) & b; }
 
 CV_EXPORTS MatExpr operator | (const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr operator | (const Mat& a, const Scalar& s);
 CV_EXPORTS MatExpr operator | (const Scalar& s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator | (const Mat& a, const Matx<_Tp, m, n>& b) { return a | Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator | (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) | b; }
 
 CV_EXPORTS MatExpr operator ^ (const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr operator ^ (const Mat& a, const Scalar& s);
 CV_EXPORTS MatExpr operator ^ (const Scalar& s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator ^ (const Mat& a, const Matx<_Tp, m, n>& b) { return a ^ Mat(b); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr operator ^ (const Matx<_Tp, m, n>& a, const Mat& b) { return Mat(a) ^ b; }
 
 CV_EXPORTS MatExpr operator ~(const Mat& m);
@@ -4113,17 +4217,17 @@ CV_EXPORTS MatExpr operator ~(const Mat& m);
 CV_EXPORTS MatExpr min(const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr min(const Mat& a, double s);
 CV_EXPORTS MatExpr min(double s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr min (const Mat& a, const Matx<_Tp, m, n>& b) { return min(a, Mat(b)); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr min (const Matx<_Tp, m, n>& a, const Mat& b) { return min(Mat(a), b); }
 
 CV_EXPORTS MatExpr max(const Mat& a, const Mat& b);
 CV_EXPORTS MatExpr max(const Mat& a, double s);
 CV_EXPORTS MatExpr max(double s, const Mat& a);
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr max (const Mat& a, const Matx<_Tp, m, n>& b) { return max(a, Mat(b)); }
-template<typename _Tp, int m, int n> static inline
+template<typename _Tp, int m, int n> inline
 MatExpr max (const Matx<_Tp, m, n>& a, const Mat& b) { return max(Mat(a), b); }
 
 /** @brief Calculates an absolute value of each matrix element.

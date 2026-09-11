@@ -5,6 +5,14 @@
 // Third party copyrights are property of their respective owners.
 
 #include "../precomp.hpp"
+
+// Dispatch infrastructure for the SIMD GridSample kernels.
+#include "cpu_kernels/gridsample_kernels.simd.hpp"
+#include "layers/cpu_kernels/gridsample_kernels.simd_declarations.hpp"
+#define CV_CPU_OPTIMIZATION_NAMESPACE_BEGIN namespace cpu_baseline {
+#define CV_CPU_OPTIMIZATION_NAMESPACE_END }
+#undef CV_CPU_DISPATCH_MODES_ALL
+
 #include "layers_common.hpp"
 #include <opencv2/dnn/shape_utils.hpp>
 #include <opencv2/core/utility.hpp>
@@ -184,48 +192,30 @@ static inline void gridSampleComputeRows(
                         const T* p = baseNC + (size_t)(y1 - 1) * xHStride + (x1 - 1);
                         float v00 = (float)p[0], v01 = (float)p[1], v02 = (float)p[2], v03 = (float)p[3];
                         float rowv0 = v00 * wx[0] + v01 * wx[1] + v02 * wx[2] + v03 * wx[3];
-                        float minv = std::min(std::min(v00, v01), std::min(v02, v03));
-                        float maxv = std::max(std::max(v00, v01), std::max(v02, v03));
                         p += xHStride;
                         float v10 = (float)p[0], v11 = (float)p[1], v12 = (float)p[2], v13 = (float)p[3];
                         float rowv1 = v10 * wx[0] + v11 * wx[1] + v12 * wx[2] + v13 * wx[3];
-                        minv = std::min(minv, std::min(std::min(v10, v11), std::min(v12, v13)));
-                        maxv = std::max(maxv, std::max(std::max(v10, v11), std::max(v12, v13)));
                         p += xHStride;
                         float v20 = (float)p[0], v21 = (float)p[1], v22 = (float)p[2], v23 = (float)p[3];
                         float rowv2 = v20 * wx[0] + v21 * wx[1] + v22 * wx[2] + v23 * wx[3];
-                        minv = std::min(minv, std::min(std::min(v20, v21), std::min(v22, v23)));
-                        maxv = std::max(maxv, std::max(std::max(v20, v21), std::max(v22, v23)));
                         p += xHStride;
                         float v30 = (float)p[0], v31 = (float)p[1], v32 = (float)p[2], v33 = (float)p[3];
                         float rowv3 = v30 * wx[0] + v31 * wx[1] + v32 * wx[2] + v33 * wx[3];
-                        minv = std::min(minv, std::min(std::min(v30, v31), std::min(v32, v33)));
-                        maxv = std::max(maxv, std::max(std::max(v30, v31), std::max(v32, v33)));
                         outv = rowv0 * wy[0] + rowv1 * wy[1] + rowv2 * wy[2] + rowv3 * wy[3];
-                        outv = std::max(minv, std::min(outv, maxv));
                     } else {
                         float a00 = fetch(baseNC, y1 - 1, x1 - 1), a01 = fetch(baseNC, y1 - 1, x1    ),
                               a02 = fetch(baseNC, y1 - 1, x1 + 1), a03 = fetch(baseNC, y1 - 1, x1 + 2);
                         float rowv0 = a00 * wx[0] + a01 * wx[1] + a02 * wx[2] + a03 * wx[3];
-                        float minv = std::min(std::min(a00, a01), std::min(a02, a03));
-                        float maxv = std::max(std::max(a00, a01), std::max(a02, a03));
                         float b00 = fetch(baseNC, y1,     x1 - 1), b01 = fetch(baseNC, y1,     x1    ),
                               b02 = fetch(baseNC, y1,     x1 + 1), b03 = fetch(baseNC, y1,     x1 + 2);
                         float rowv1 = b00 * wx[0] + b01 * wx[1] + b02 * wx[2] + b03 * wx[3];
-                        minv = std::min(minv, std::min(std::min(b00, b01), std::min(b02, b03)));
-                        maxv = std::max(maxv, std::max(std::max(b00, b01), std::max(b02, b03)));
                         float c00 = fetch(baseNC, y1 + 1, x1 - 1), c01 = fetch(baseNC, y1 + 1, x1    ),
                               c02 = fetch(baseNC, y1 + 1, x1 + 1), c03 = fetch(baseNC, y1 + 1, x1 + 2);
                         float rowv2 = c00 * wx[0] + c01 * wx[1] + c02 * wx[2] + c03 * wx[3];
-                        minv = std::min(minv, std::min(std::min(c00, c01), std::min(c02, c03)));
-                        maxv = std::max(maxv, std::max(std::max(c00, c01), std::max(c02, c03)));
                         float d00 = fetch(baseNC, y1 + 2, x1 - 1), d01 = fetch(baseNC, y1 + 2, x1    ),
                               d02 = fetch(baseNC, y1 + 2, x1 + 1), d03 = fetch(baseNC, y1 + 2, x1 + 2);
                         float rowv3 = d00 * wx[0] + d01 * wx[1] + d02 * wx[2] + d03 * wx[3];
-                        minv = std::min(minv, std::min(std::min(d00, d01), std::min(d02, d03)));
-                        maxv = std::max(maxv, std::max(std::max(d00, d01), std::max(d02, d03)));
                         outv = rowv0 * wy[0] + rowv1 * wy[1] + rowv2 * wy[2] + rowv3 * wy[3];
-                        outv = std::max(minv, std::min(outv, maxv));
                     }
                 }
                 Yptr[yRowBase + w] = saturate_cast<T>(outv);
@@ -233,6 +223,7 @@ static inline void gridSampleComputeRows(
         }
     });
 }
+
 
 template<typename T>
 static inline void gridSampleDispatch(
@@ -245,6 +236,24 @@ static inline void gridSampleDispatch(
         int mode, int padding,
         float cubic_alpha)
 {
+    if (std::is_same<T, float>::value) {
+        const float* X = reinterpret_cast<const float*>(Xptr);
+        float* Y = reinterpret_cast<float*>(Yptr);
+        if (mode == M_NEAREST) {
+            CV_CPU_DISPATCH(gridSampleNearest2D_f32_,
+                            (X, Gptr, Y, N, C, H, W, Hout, Wout, align_corners, padding),
+                            NEON, AVX2, AVX, BASELINE);
+        } else if (mode == M_BILINEAR) {
+            CV_CPU_DISPATCH(gridSampleBilinear2D_f32_,
+                            (X, Gptr, Y, N, C, H, W, Hout, Wout, align_corners, padding),
+                            NEON, AVX2, AVX, BASELINE);
+        } else {
+            CV_CPU_DISPATCH(gridSampleBicubic2D_f32_,
+                            (X, Gptr, Y, N, C, H, W, Hout, Wout, align_corners, padding, cubic_alpha),
+                            NEON, AVX2, AVX, BASELINE);
+        }
+        return;
+    }
     if (mode == M_NEAREST) {
         if (padding == P_ZEROS) gridSampleComputeRows<T, M_NEAREST, P_ZEROS>(Xptr, Gptr, Yptr, N, C, H, W, Hout, Wout, align_corners, cubic_alpha);
         else if (padding == P_BORDER) gridSampleComputeRows<T, M_NEAREST, P_BORDER>(Xptr, Gptr, Yptr, N, C, H, W, Hout, Wout, align_corners, cubic_alpha);
@@ -387,6 +396,7 @@ static inline void gridSampleCompute3D(
     });
 }
 
+
 template<typename T>
 static inline void gridSampleDispatch3D(
         const T* Xptr,
@@ -397,6 +407,22 @@ static inline void gridSampleDispatch3D(
         bool align_corners,
         int mode, int padding)
 {
+    if (std::is_same<T, float>::value) {
+        const float* X = reinterpret_cast<const float*>(Xptr);
+        float* Y = reinterpret_cast<float*>(Yptr);
+        if (mode == M_NEAREST) {
+            CV_CPU_DISPATCH(gridSampleNearest3D_f32_,
+                            (X, Gptr, Y, N, C, D, H, W, Dout, Hout, Wout, align_corners, padding),
+                            NEON, AVX2, AVX, BASELINE);
+        } else if (mode == M_BILINEAR) {
+            CV_CPU_DISPATCH(gridSampleBilinear3D_f32_,
+                            (X, Gptr, Y, N, C, D, H, W, Dout, Hout, Wout, align_corners, padding),
+                            NEON, AVX2, AVX, BASELINE);
+        } else {
+            CV_Error(Error::StsNotImplemented, "GridSample bicubic mode is not supported for 5D inputs");
+        }
+        return;
+    }
     if (mode == M_NEAREST) {
         if (padding == P_ZEROS) gridSampleCompute3D<T, M_NEAREST, P_ZEROS>(Xptr, Gptr, Yptr, N, C, D, H, W, Dout, Hout, Wout, align_corners);
         else if (padding == P_BORDER) gridSampleCompute3D<T, M_NEAREST, P_BORDER>(Xptr, Gptr, Yptr, N, C, D, H, W, Dout, Hout, Wout, align_corners);
@@ -426,7 +452,7 @@ public:
         cubic_alpha = params.get<float>("cubic_coeff_a", -0.75f);
 
         if (m == "nearest") mode = M_NEAREST;
-        else if (m == "bicubic") mode = M_BICUBIC;
+        else if (m == "bicubic" || m == "cubic") mode = M_BICUBIC;
         else mode = M_BILINEAR;
 
         if (p == "border") padding = P_BORDER;

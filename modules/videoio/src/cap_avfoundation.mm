@@ -37,8 +37,13 @@
 #include "cap_interface.hpp"
 #include <iostream>
 #include <Availability.h>
+#include <TargetConditionals.h>
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/NSException.h>
+
+#ifndef TARGET_OS_VISION
+#define TARGET_OS_VISION 0
+#endif
 
 #define CV_CAP_MODE_BGR CV_FOURCC_MACRO('B','G','R','3')
 #define CV_CAP_MODE_RGB CV_FOURCC_MACRO('R','G','B','3')
@@ -185,7 +190,7 @@ class CvVideoWriter_AVFoundation : public cv::IVideoWriter{
                 int is_color=1);
         ~CvVideoWriter_AVFoundation();
         bool isOpened() const CV_OVERRIDE { return mMovieWriter != NULL && mMovieWriter.status != AVAssetWriterStatusFailed; }
-        void write(cv::InputArray image) CV_OVERRIDE;
+        bool write(cv::InputArray image) CV_OVERRIDE;
         int getCaptureDomain() const CV_OVERRIDE { return cv::CAP_AVFOUNDATION; }
     private:
         cv::Mat argbimage;
@@ -521,7 +526,7 @@ double CvCaptureCAM::getProperty(int property_id) const{
             return mCaptureDevice.torchMode;
 
         default:
-            return 0;
+            return cv::CAP_PROP_UNKNOWN;
     }
 
 
@@ -1056,7 +1061,7 @@ bool CvCaptureFile::retrieveFrame(int, cv::OutputArray arr) {
 }
 
 double CvCaptureFile::getProperty(int property_id) const{
-    if (mAsset == nil) return 0;
+    if (mAsset == nil) return cv::CAP_PROP_UNKNOWN;
 
     CMTime t;
 
@@ -1064,7 +1069,7 @@ double CvCaptureFile::getProperty(int property_id) const{
         case cv::CAP_PROP_POS_MSEC:
             return mFrameTimestamp.value * 1000.0 / mFrameTimestamp.timescale;
         case cv::CAP_PROP_POS_FRAMES:
-            return mAssetTrack.nominalFrameRate > 0 ? mFrameNum : 0;
+            return mAssetTrack.nominalFrameRate > 0 ? mFrameNum : cv::CAP_PROP_UNKNOWN;
         case cv::CAP_PROP_POS_AVI_RATIO:
             t = [mAsset duration];
             return (mFrameTimestamp.value * t.timescale) / double(mFrameTimestamp.timescale * t.value);
@@ -1087,7 +1092,7 @@ double CvCaptureFile::getProperty(int property_id) const{
             break;
     }
 
-    return 0;
+    return cv::CAP_PROP_UNKNOWN;
 }
 
 bool CvCaptureFile::setProperty(int property_id, double value) {
@@ -1104,9 +1109,19 @@ bool CvCaptureFile::setProperty(int property_id, double value) {
             t.value = value * t.timescale / 1000;
             retval = setupReadingAt(t);
             break;
-        case cv::CAP_PROP_POS_FRAMES:
-            retval = mAssetTrack.nominalFrameRate > 0 ? setupReadingAt(CMTimeMake(value, mAssetTrack.nominalFrameRate)) : false;
+        case cv::CAP_PROP_POS_FRAMES: {
+            // Build the seek CMTime from the track's native rational frame
+            // duration so non-integer rates (e.g. 23.976 = 24000/1001) are exact.
+            CMTime frameDuration = mAssetTrack.minFrameDuration;
+            if (frameDuration.timescale > 0 && frameDuration.value > 0) {
+                retval = setupReadingAt(CMTimeMultiply(frameDuration, (int32_t)value));
+            } else if (mAssetTrack.nominalFrameRate > 0) {
+                retval = setupReadingAt(CMTimeMake(value, mAssetTrack.nominalFrameRate));
+            } else {
+                retval = false;
+            }
             break;
+        }
         case cv::CAP_PROP_POS_AVI_RATIO:
             t = mAsset.duration;
             t.value = round(t.value * value);
@@ -1155,228 +1170,198 @@ CvVideoWriter_AVFoundation::CvVideoWriter_AVFoundation(const char* filename, int
         double fps, const cv::Size& frame_size,
         int is_color) {
 
-    NSAutoreleasePool* localpool = [[NSAutoreleasePool alloc] init];
+    @autoreleasepool {
+        frameCount = 0;
+        movieFPS = fps;
+        movieSize = frame_size;
+        movieColor = is_color;
+        argbimage = cv::Mat(movieSize, CV_8UC4);
+        path = [[[NSString stringWithCString:filename encoding:NSASCIIStringEncoding] stringByExpandingTildeInPath] retain];
 
+        /*
+             AVFileTypeQuickTimeMovie
+             UTI for the QuickTime movie file format.
+             The value of this UTI is com.apple.quicktime-movie. Files are identified with the .mov and .qt extensions.
 
-    frameCount = 0;
-    movieFPS = fps;
-    movieSize = frame_size;
-    movieColor = is_color;
-    argbimage = cv::Mat(movieSize, CV_8UC4);
-    path = [[[NSString stringWithCString:filename encoding:NSASCIIStringEncoding] stringByExpandingTildeInPath] retain];
+             AVFileTypeMPEG4
+             UTI for the MPEG-4 file format.
+             The value of this UTI is public.mpeg-4. Files are identified with the .mp4 extension.
 
+             AVFileTypeAppleM4V
+             UTI for the iTunes video file format.
+             The value of this UTI is com.apple.mpeg-4-video. Files are identified with the .m4v extension.
 
-    /*
-         AVFileTypeQuickTimeMovie
-         UTI for the QuickTime movie file format.
-         The value of this UTI is com.apple.quicktime-movie. Files are identified with the .mov and .qt extensions.
+             AVFileType3GPP
+             UTI for the 3GPP file format.
+             The value of this UTI is public.3gpp. Files are identified with the .3gp, .3gpp, and .sdv extensions.
+         */
 
-         AVFileTypeMPEG4
-         UTI for the MPEG-4 file format.
-         The value of this UTI is public.mpeg-4. Files are identified with the .mp4 extension.
-
-         AVFileTypeAppleM4V
-         UTI for the iTunes video file format.
-         The value of this UTI is com.apple.mpeg-4-video. Files are identified with the .m4v extension.
-
-         AVFileType3GPP
-         UTI for the 3GPP file format.
-         The value of this UTI is public.3gpp. Files are identified with the .3gp, .3gpp, and .sdv extensions.
-     */
-
-    NSString *fileExt =[[[path pathExtension] lowercaseString] copy];
-    if ([fileExt isEqualToString:@"mov"] || [fileExt isEqualToString:@"qt"]){
-        fileType = [AVFileTypeQuickTimeMovie copy];
-    }else if ([fileExt isEqualToString:@"mp4"]){
-        fileType = [AVFileTypeMPEG4 copy];
-    }else if ([fileExt isEqualToString:@"m4v"]){
-        fileType = [AVFileTypeAppleM4V copy];
+        NSString *fileExt = [[[path pathExtension] lowercaseString] copy];
+        if ([fileExt isEqualToString:@"mov"] || [fileExt isEqualToString:@"qt"]) {
+            fileType = [AVFileTypeQuickTimeMovie copy];
+        } else if ([fileExt isEqualToString:@"mp4"]) {
+            fileType = [AVFileTypeMPEG4 copy];
+        } else if ([fileExt isEqualToString:@"m4v"]) {
+            fileType = [AVFileTypeAppleM4V copy];
 #if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
-    }else if ([fileExt isEqualToString:@"3gp"] || [fileExt isEqualToString:@"3gpp"] || [fileExt isEqualToString:@"sdv"]  ){
-        fileType = [AVFileType3GPP copy];
+        } else if ([fileExt isEqualToString:@"3gp"] || [fileExt isEqualToString:@"3gpp"] || [fileExt isEqualToString:@"sdv"]) {
+            fileType = [AVFileType3GPP copy];
 #endif
-    } else{
-        fileType = [AVFileTypeMPEG4 copy];  //default mp4
-    }
-    [fileExt release];
+        } else {
+            fileType = [AVFileTypeMPEG4 copy];  //default mp4
+        }
+        [fileExt release];
 
-    char cc[5];
-    cc[0] = fourcc & 255;
-    cc[1] = (fourcc >> 8) & 255;
-    cc[2] = (fourcc >> 16) & 255;
-    cc[3] = (fourcc >> 24) & 255;
-    cc[4] = 0;
-    int cc2 = CV_FOURCC(cc[0], cc[1], cc[2], cc[3]);
-    if (cc2!=fourcc) {
-        std::cout << "WARNING: Didn't properly encode FourCC. Expected " << fourcc
-            << " but got " << cc2 << "." << std::endl;
-        //exception;
-    }
+        char cc[5];
+        cc[0] = fourcc & 255;
+        cc[1] = (fourcc >> 8) & 255;
+        cc[2] = (fourcc >> 16) & 255;
+        cc[3] = (fourcc >> 24) & 255;
+        cc[4] = 0;
+        int cc2 = CV_FOURCC(cc[0], cc[1], cc[2], cc[3]);
+        if (cc2 != fourcc) {
+            std::cout << "WARNING: Didn't properly encode FourCC. Expected " << fourcc
+                << " but got " << cc2 << "." << std::endl;
+        }
 
-    // Three codec supported AVVideoCodecTypeH264 AVVideoCodecTypeJPEG AVVideoCodecTypeHEVC
-    // On iPhone 3G H264 is not supported.
-    if (fourcc == CV_FOURCC('J','P','E','G') || fourcc == CV_FOURCC('j','p','e','g') ||
-            fourcc == CV_FOURCC('M','J','P','G') || fourcc == CV_FOURCC('m','j','p','g')){
-        codec = [AVVideoCodecTypeJPEG copy]; // Use JPEG codec if specified, otherwise H264
-    }else if(fourcc == CV_FOURCC('H','2','6','4') || fourcc == CV_FOURCC('a','v','c','1')){
-            codec = [AVVideoCodecTypeH264 copy];
+        // Three codec supported AVVideoCodecTypeH264 AVVideoCodecTypeJPEG AVVideoCodecTypeHEVC
+        // On iPhone 3G H264 is not supported.
+        if (fourcc == CV_FOURCC('J','P','E','G') || fourcc == CV_FOURCC('j','p','e','g') ||
+                fourcc == CV_FOURCC('M','J','P','G') || fourcc == CV_FOURCC('m','j','p','g')) {
+            codec = [AVVideoCodecTypeJPEG copy]; // Use JPEG codec if specified, otherwise H264
+        } else if (fourcc == CV_FOURCC('H','2','6','4') || fourcc == CV_FOURCC('a','v','c','1')) {
+                codec = [AVVideoCodecTypeH264 copy];
 // Available since iOS 11
 #if TARGET_OS_VISION || (defined(__IPHONE_OS_VERSION_MIN_REQUIRED) && __IPHONE_OS_VERSION_MIN_REQUIRED >= 110000)
-    }else if(fourcc == CV_FOURCC('H','2','6','5') || fourcc == CV_FOURCC('h','v','c','1') ||
-            fourcc == CV_FOURCC('H','E','V','C') || fourcc == CV_FOURCC('h','e','v','c')){
-        if (@available(iOS 11, *)) {
-            codec = [AVVideoCodecTypeHEVC copy];
-        } else {
-            codec = [AVVideoCodecTypeH264 copy];
-        }
+        } else if (fourcc == CV_FOURCC('H','2','6','5') || fourcc == CV_FOURCC('h','v','c','1') ||
+                fourcc == CV_FOURCC('H','E','V','C') || fourcc == CV_FOURCC('h','e','v','c')) {
+            if (@available(iOS 11, *)) {
+                codec = [AVVideoCodecTypeHEVC copy];
+            } else {
+                codec = [AVVideoCodecTypeH264 copy];
+            }
 #endif
-    }else{
-        codec = [AVVideoCodecTypeH264 copy]; // default canonical H264.
+        } else {
+            codec = [AVVideoCodecTypeH264 copy]; // default canonical H264.
+        }
+
+        NSError *error = nil;
+
+        // Wire the writer:
+        // Supported file types:
+        //      AVFileTypeQuickTimeMovie AVFileTypeMPEG4 AVFileTypeAppleM4V AVFileType3GPP
+
+        mMovieWriter = [[AVAssetWriter alloc] initWithURL:[NSURL fileURLWithPath:path]
+            fileType:fileType
+            error:&error];
+
+        NSDictionary *videoSettings = [NSDictionary dictionaryWithObjectsAndKeys:
+            codec, AVVideoCodecKey,
+            [NSNumber numberWithInt:movieSize.width], AVVideoWidthKey,
+            [NSNumber numberWithInt:movieSize.height], AVVideoHeightKey,
+            nil];
+
+        mMovieWriterInput = [[AVAssetWriterInput
+            assetWriterInputWithMediaType:AVMediaTypeVideo
+            outputSettings:videoSettings] retain];
+
+        [mMovieWriter addInput:mMovieWriterInput];
+
+        mMovieWriterAdaptor = [[AVAssetWriterInputPixelBufferAdaptor alloc] initWithAssetWriterInput:mMovieWriterInput sourcePixelBufferAttributes:nil];
+
+        //Start a session:
+        [mMovieWriter startWriting];
+        [mMovieWriter startSessionAtSourceTime:kCMTimeZero];
+
+        if (mMovieWriter.status == AVAssetWriterStatusFailed) {
+            NSLog(@"%@", [mMovieWriter.error localizedDescription]);
+            // TODO: error handling, cleanup. Throw exception?
+        }
     }
-
-    //NSLog(@"Path: %@", path);
-
-    NSError *error = nil;
-
-
-    // Make sure the file does not already exist. Necessary to overwrite??
-    /*
-    NSFileManager *fileManager = [NSFileManager defaultManager];
-    if ([fileManager fileExistsAtPath:path]){
-        [fileManager removeItemAtPath:path error:&error];
-    }
-    */
-
-    // Wire the writer:
-    // Supported file types:
-    //      AVFileTypeQuickTimeMovie AVFileTypeMPEG4 AVFileTypeAppleM4V AVFileType3GPP
-
-    mMovieWriter = [[AVAssetWriter alloc] initWithURL:[NSURL fileURLWithPath:path]
-        fileType:fileType
-        error:&error];
-    //NSParameterAssert(mMovieWriter);
-
-    NSDictionary *videoSettings = [NSDictionary dictionaryWithObjectsAndKeys:
-        codec, AVVideoCodecKey,
-        [NSNumber numberWithInt:movieSize.width], AVVideoWidthKey,
-        [NSNumber numberWithInt:movieSize.height], AVVideoHeightKey,
-        nil];
-
-    mMovieWriterInput = [[AVAssetWriterInput
-        assetWriterInputWithMediaType:AVMediaTypeVideo
-        outputSettings:videoSettings] retain];
-
-    //NSParameterAssert(mMovieWriterInput);
-    //NSParameterAssert([mMovieWriter canAddInput:mMovieWriterInput]);
-
-    [mMovieWriter addInput:mMovieWriterInput];
-
-    mMovieWriterAdaptor = [[AVAssetWriterInputPixelBufferAdaptor alloc] initWithAssetWriterInput:mMovieWriterInput sourcePixelBufferAttributes:nil];
-
-
-    //Start a session:
-    [mMovieWriter startWriting];
-    [mMovieWriter startSessionAtSourceTime:kCMTimeZero];
-
-
-    if(mMovieWriter.status == AVAssetWriterStatusFailed){
-        NSLog(@"%@", [mMovieWriter.error localizedDescription]);
-        // TODO: error handling, cleanup. Throw exception?
-        // return;
-    }
-
-    [localpool drain];
 }
 
 
 CvVideoWriter_AVFoundation::~CvVideoWriter_AVFoundation() {
-    NSAutoreleasePool* localpool = [[NSAutoreleasePool alloc] init];
-
-    [mMovieWriterInput markAsFinished];
-    [mMovieWriter finishWritingWithCompletionHandler:^() {
-        [mMovieWriter release];
-        [mMovieWriterInput release];
-        [mMovieWriterAdaptor release];
-        [path release];
-        [codec release];
-        [fileType release];
-        argbimage.release();
-
-        [localpool drain];
-    }];
+    @autoreleasepool {
+        [mMovieWriterInput markAsFinished];
+        [mMovieWriter finishWritingWithCompletionHandler:^() {
+            @autoreleasepool {
+                [mMovieWriter release];
+                [mMovieWriterInput release];
+                [mMovieWriterAdaptor release];
+                [path release];
+                [codec release];
+                [fileType release];
+                argbimage.release();
+            }
+        }];
+    }
 }
 
-void CvVideoWriter_AVFoundation::write(cv::InputArray image) {
-    NSAutoreleasePool* localpool = [[NSAutoreleasePool alloc] init];
+bool CvVideoWriter_AVFoundation::write(cv::InputArray image) {
+    @autoreleasepool {
+        // writer status check
+        if (![mMovieWriterInput isReadyForMoreMediaData] || mMovieWriter.status != AVAssetWriterStatusWriting) {
+            NSLog(@"[mMovieWriterInput isReadyForMoreMediaData] Not ready for media data or ...");
+            NSLog(@"mMovieWriter.status: %d. Error: %@", (int)mMovieWriter.status, [mMovieWriter.error localizedDescription]);
+            return false;
+        }
 
-    // writer status check
-    if (![mMovieWriterInput isReadyForMoreMediaData] || mMovieWriter.status !=  AVAssetWriterStatusWriting ) {
-        NSLog(@"[mMovieWriterInput isReadyForMoreMediaData] Not ready for media data or ...");
-        NSLog(@"mMovieWriter.status: %d. Error: %@", (int)mMovieWriter.status, [mMovieWriter.error localizedDescription]);
-        [localpool drain];
-        return;
+        BOOL success = FALSE;
+
+        if (image.size().height != movieSize.height || image.size().width != movieSize.width) {
+            std::cout << "Frame size does not match video size." << std::endl;
+            return false;
+        }
+
+        if (movieColor) {
+            cv::cvtColor(image, argbimage, cv::COLOR_BGR2BGRA);
+        } else {
+            cv::cvtColor(image, argbimage, cv::COLOR_GRAY2BGRA);
+        }
+
+        //IplImage -> CGImage conversion
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        NSData *nsData = [NSData dataWithBytes:argbimage.data length:argbimage.total() * argbimage.elemSize()];
+        CGDataProviderRef provider = CGDataProviderCreateWithCFData((CFDataRef)nsData);
+        CGImageRef cgImage = CGImageCreate(argbimage.size().width, argbimage.size().height,
+                8, 32, argbimage.step[0],
+                colorSpace, kCGImageAlphaLast|kCGBitmapByteOrderDefault,
+                provider, NULL, false, kCGRenderingIntentDefault);
+
+        //CGImage -> CVPixelBufferRef conversion
+        CVPixelBufferRef pixelBuffer = NULL;
+        CFDataRef cfData = CGDataProviderCopyData(CGImageGetDataProvider(cgImage));
+        int status = CVPixelBufferCreateWithBytes(NULL,
+                movieSize.width,
+                movieSize.height,
+                kCVPixelFormatType_32BGRA,
+                (void*)CFDataGetBytePtr(cfData),
+                CGImageGetBytesPerRow(cgImage),
+                NULL,
+                0,
+                NULL,
+                &pixelBuffer);
+        if (status == kCVReturnSuccess) {
+            success = [mMovieWriterAdaptor appendPixelBuffer:pixelBuffer
+                withPresentationTime:CMTimeMake(frameCount, movieFPS)];
+        }
+
+        //cleanup
+        CFRelease(cfData);
+        CVPixelBufferRelease(pixelBuffer);
+        CGImageRelease(cgImage);
+        CGDataProviderRelease(provider);
+        CGColorSpaceRelease(colorSpace);
+
+        if (success) {
+            frameCount++;
+            return true;
+        } else {
+            NSLog(@"Frame appendPixelBuffer failed.");
+            return false;
+        }
     }
-
-    BOOL success = FALSE;
-
-    if (image.size().height!=movieSize.height || image.size().width!=movieSize.width){
-        std::cout<<"Frame size does not match video size."<<std::endl;
-        [localpool drain];
-        return;
-    }
-
-    if (movieColor) {
-        //assert(image->nChannels == 3);
-        cv::cvtColor(image, argbimage, cv::COLOR_BGR2BGRA);
-    }else{
-        //assert(image->nChannels == 1);
-        cv::cvtColor(image, argbimage, cv::COLOR_GRAY2BGRA);
-    }
-    //IplImage -> CGImage conversion
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    NSData *nsData = [NSData dataWithBytes:argbimage.data length:argbimage.total() * argbimage.elemSize()];
-    CGDataProviderRef provider = CGDataProviderCreateWithCFData((CFDataRef)nsData);
-    CGImageRef cgImage = CGImageCreate(argbimage.size().width, argbimage.size().height,
-            8, 32, argbimage.step[0],
-            colorSpace, kCGImageAlphaLast|kCGBitmapByteOrderDefault,
-            provider, NULL, false, kCGRenderingIntentDefault);
-
-    //CGImage -> CVPixelBufferRef conversion
-    CVPixelBufferRef pixelBuffer = NULL;
-    CFDataRef cfData = CGDataProviderCopyData(CGImageGetDataProvider(cgImage));
-    int status = CVPixelBufferCreateWithBytes(NULL,
-            movieSize.width,
-            movieSize.height,
-            kCVPixelFormatType_32BGRA,
-            (void*)CFDataGetBytePtr(cfData),
-            CGImageGetBytesPerRow(cgImage),
-            NULL,
-            0,
-            NULL,
-            &pixelBuffer);
-    if(status == kCVReturnSuccess){
-        success = [mMovieWriterAdaptor appendPixelBuffer:pixelBuffer
-            withPresentationTime:CMTimeMake(frameCount, movieFPS)];
-    }
-
-    //cleanup
-    CFRelease(cfData);
-    CVPixelBufferRelease(pixelBuffer);
-    CGImageRelease(cgImage);
-    CGDataProviderRelease(provider);
-    CGColorSpaceRelease(colorSpace);
-
-    [localpool drain];
-
-    if (success) {
-        frameCount ++;
-        //NSLog(@"Frame #%d", frameCount);
-        return;
-    }else{
-        NSLog(@"Frame appendPixelBuffer failed.");
-        return;
-    }
-
 }
 
 #pragma clang diagnostic pop

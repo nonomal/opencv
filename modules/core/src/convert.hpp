@@ -140,6 +140,11 @@ static inline void vx_load_pair_as(const ushort* ptr, v_int32& a, v_int32& b)
     b = v_reinterpret_as_s32(ub);
 }
 
+static inline void vx_load_pair_as(const ushort* ptr, v_uint32& a, v_uint32& b)
+{
+    v_expand(vx_load(ptr), a, b);
+}
+
 static inline void vx_load_pair_as(const short* ptr, v_int32& a, v_int32& b)
 {
     v_expand(vx_load(ptr), a, b);
@@ -428,11 +433,12 @@ static inline void v_store_pair_as(float* ptr, const v_float32& a, const v_float
 
 static inline void v_store_pair_as(unsigned* ptr, const v_float32& a, const v_float32& b)
 {
-    v_int32 z = vx_setzero_s32();
-    v_int32 ia = v_max(v_round(a), z);
-    v_int32 ib = v_max(v_round(b), z);
-    v_store(ptr, v_reinterpret_as_u32(ia));
-    v_store(ptr + VTraits<v_int32>::vlanes(), v_reinterpret_as_u32(ib));
+    // v_round(f32) narrows to v_int32, so values in [2^31, 2^32) saturate to INT32_MAX. Scalar for now
+    // (same class as the f64->{u64,s64,u32} stores above); a proper f32->u32 intrinsic can replace it.
+    const int n = VTraits<v_float32>::vlanes();
+    float buf[VTraits<v_float32>::max_nlanes*2];
+    v_store(buf, a); v_store(buf + n, b);
+    for (int i = 0; i < 2*n; i++) ptr[i] = saturate_cast<unsigned>(buf[i]);
 }
 
 static inline void v_store_pair_as(uchar* ptr, const v_uint32& a, const v_uint32& b)
@@ -467,6 +473,92 @@ static inline void v_store_pair_as(uint64_t* ptr, const v_uint64& a, const v_uin
 {
     v_store(ptr, a);
     v_store(ptr + VTraits<v_uint64>::vlanes(), b);
+}
+
+// float32 -> FP8 encode, shared by both scale paths. Fallback: no portable per-lane variable shift.
+
+// fallback test plus the pieces encodeFp8Finish needs, to skip costly math when unused
+template<int bias> static inline void
+fp8Prepare(const v_float32& vf, v_uint32& full, v_uint32& sbit, v_int32& newexpRaw, v_int32& fallbackMask)
+{
+    v_uint32 u = v_reinterpret_as_u32(vf);
+    v_uint32 e = v_and(v_shr<23>(u), vx_setall_u32(0xFFu));
+    v_uint32 m = v_and(u, vx_setall_u32(0x7FFFFFu));
+    sbit = v_and(v_shr<24>(u), vx_setall_u32(0x80u));
+    full = v_or(m, vx_setall_u32(1u << 23));
+    newexpRaw = v_sub(v_reinterpret_as_s32(e), vx_setall_s32(127 - bias));
+    v_int32 isNan = v_reinterpret_as_s32(v_eq(e, vx_setall_u32(0xFFu)));
+    fallbackMask = v_or(isNan, v_le(newexpRaw, vx_setall_s32(0)));
+}
+
+// round-half-up + carry + overflow-to-NaN; valid only when fp8Prepare's fallbackMask is false
+template<int bias, bool fnuz> static inline v_int32
+encodeFp8Finish(v_uint32 full, v_uint32 sbit, v_int32 newexpRaw)
+{
+    v_uint32 q       = v_shr<20>(full);
+    v_uint32 rem     = v_and(full, vx_setall_u32((1u << 20) - 1));
+    v_uint32 inc     = v_and(v_ge(rem, vx_setall_u32(1u << 19)), vx_setall_u32(1u));
+    v_uint32 rounded = v_add(q, inc);
+
+    v_uint32 carry = v_ne(v_and(rounded, vx_setall_u32(16u)), vx_setall_u32(0u));
+    rounded = v_select(carry, v_shr<1>(rounded), rounded);
+    v_int32 newexp = v_add(newexpRaw, v_and(v_reinterpret_as_s32(carry), vx_setall_s32(1)));
+
+    v_uint32 mant = v_and(rounded, vx_setall_u32(7u));
+
+    v_int32 gt15 = v_gt(newexp, vx_setall_s32(15));
+    v_int32 overflow;
+    if constexpr (fnuz)
+        overflow = gt15;
+    else
+        overflow = v_or(gt15, v_and(v_eq(newexp, vx_setall_s32(15)),
+                                     v_eq(v_reinterpret_as_s32(mant), vx_setall_s32(7))));
+
+    v_uint32 nanCode;
+    if constexpr (fnuz)
+        nanCode = vx_setall_u32(0x80u);
+    else
+        nanCode = v_or(sbit, vx_setall_u32(0x7Fu));
+
+    v_uint32 normal = v_or(v_or(sbit, v_shl<3>(v_reinterpret_as_u32(newexp))), mant);
+    v_uint32 result = v_select(v_reinterpret_as_u32(overflow), nanCode, normal);
+    return v_reinterpret_as_s32(result);
+}
+
+// encodes vf0..vf3 to FP8 bytes; scalarSrc must hold the same values, contiguous, for fallback
+template<int bias, bool fnuz> static inline void
+encodeFp8Vec4(const v_float32& vf0, const v_float32& vf1, const v_float32& vf2, const v_float32& vf3,
+              const float* scalarSrc, int vecsz, uchar* dst)
+{
+    v_uint32 full0, full1, full2, full3, sbit0, sbit1, sbit2, sbit3;
+    v_int32 newexpRaw0, newexpRaw1, newexpRaw2, newexpRaw3;
+    v_int32 pre0, pre1, pre2, pre3;
+    fp8Prepare<bias>(vf0, full0, sbit0, newexpRaw0, pre0);
+    fp8Prepare<bias>(vf1, full1, sbit1, newexpRaw1, pre1);
+    fp8Prepare<bias>(vf2, full2, sbit2, newexpRaw2, pre2);
+    fp8Prepare<bias>(vf3, full3, sbit3, newexpRaw3, pre3);
+
+    if (v_check_all(v_and(v_and(pre0, pre1), v_and(pre2, pre3))))
+    {
+        // whole group is subnormal/zero/NaN — skip the costlier fast-path math
+        for (int k = 0; k < vecsz; k++)
+            dst[k] = fp8_detail::encodeE4M3(scalarSrc[k], bias, fnuz);
+        return;
+    }
+
+    v_int32 byte0 = encodeFp8Finish<bias, fnuz>(full0, sbit0, newexpRaw0);
+    v_int32 byte1 = encodeFp8Finish<bias, fnuz>(full1, sbit1, newexpRaw1);
+    v_int32 byte2 = encodeFp8Finish<bias, fnuz>(full2, sbit2, newexpRaw2);
+    v_int32 byte3 = encodeFp8Finish<bias, fnuz>(full3, sbit3, newexpRaw3);
+    v_store(dst, v_pack_u(v_pack(byte0, byte1), v_pack(byte2, byte3)));
+
+    v_int32 one = vx_setall_s32(1);
+    uchar fallback[VTraits<v_uint8>::max_nlanes];
+    v_store(fallback, v_pack_u(v_pack(v_and(pre0, one), v_and(pre1, one)),
+                                v_pack(v_and(pre2, one), v_and(pre3, one))));
+    for (int k = 0; k < vecsz; k++)
+        if (fallback[k])
+            dst[k] = fp8_detail::encodeE4M3(scalarSrc[k], bias, fnuz);
 }
 
 #if (CV_SIMD_64F || CV_SIMD_SCALABLE_64F)
@@ -657,27 +749,31 @@ static inline void v_store_pair_as(hfloat* ptr, const v_float64& a, const v_floa
     v_pack_store(ptr, v);
 }
 
+// f64 -> {u64, s64, u32}: no correct vector path yet - v_round(f64,f64) narrows to v_int32, which
+// truncates the 64-bit range (u64/s64) and the upper half of u32. Scalar for now (matches the scalar
+// tail these functions already fall back to); a proper f64->s64/u64 intrinsic can replace it later.
 static inline void v_store_pair_as(uint64_t* ptr, const v_float64& a, const v_float64& b)
 {
-    v_float64 z = vx_setzero_f64();
-    v_int64 ia, ib;
-    v_expand(v_round(v_max(a, z), v_max(b, z)), ia, ib);
-    v_store(ptr, v_reinterpret_as_u64(ia));
-    v_store(ptr + VTraits<v_uint64>::vlanes(), v_reinterpret_as_u64(ib));
+    const int n = VTraits<v_float64>::vlanes();
+    double buf[VTraits<v_float64>::max_nlanes*2];
+    v_store(buf, a); v_store(buf + n, b);
+    for (int i = 0; i < 2*n; i++) ptr[i] = saturate_cast<uint64_t>(buf[i]);
 }
 
 static inline void v_store_pair_as(int64_t* ptr, const v_float64& a, const v_float64& b)
 {
-    v_int64 ia, ib;
-    v_expand(v_round(a, b), ia, ib);
-    v_store(ptr, ia);
-    v_store(ptr + VTraits<v_uint64>::vlanes(), ib);
+    const int n = VTraits<v_float64>::vlanes();
+    double buf[VTraits<v_float64>::max_nlanes*2];
+    v_store(buf, a); v_store(buf + n, b);
+    for (int i = 0; i < 2*n; i++) ptr[i] = saturate_cast<int64_t>(buf[i]);
 }
 
 static inline void v_store_pair_as(unsigned* ptr, const v_float64& a, const v_float64& b)
 {
-    v_int32 iab = v_max(v_round(a, b), vx_setzero_s32());
-    v_store(ptr, v_reinterpret_as_u32(iab));
+    const int n = VTraits<v_float64>::vlanes();
+    double buf[VTraits<v_float64>::max_nlanes*2];
+    v_store(buf, a); v_store(buf + n, b);
+    for (int i = 0; i < 2*n; i++) ptr[i] = saturate_cast<unsigned>(buf[i]);
 }
 
 #else

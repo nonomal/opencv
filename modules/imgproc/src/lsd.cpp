@@ -41,6 +41,7 @@
 
 #include "precomp.hpp"
 #include <vector>
+#include <cmath>
 
 /////////////////////////////////////////////////////////////////////////////////////////
 // Default LSD parameters
@@ -138,7 +139,7 @@ inline double get_limit(cv::Point2d p, int row, double slope) {
 inline double log_gamma_windschitl(const double& x)
 {
     return 0.918938533204673 + (x-0.5)*log(x) - x
-         + 0.5*x*log(x*sinh(1/x) + 1/(810.0*pow(x, 6.0)));
+         + 0.5*x*log(x*sinh(1/x) + 1/(810.0*std::pow(x, 6)));
 }
 
 /**
@@ -156,7 +157,7 @@ inline double log_gamma_lanczos(const double& x)
     for(int n = 0; n < 7; ++n)
     {
         a -= log(x + double(n));
-        b += q[n] * pow(x, double(n));
+        b += q[n] * std::pow(x, n);
     }
     return a + log(b);
 }
@@ -450,7 +451,7 @@ void LineSegmentDetectorImpl::flsd(std::vector<Vec4f>& lines,
     // Angle tolerance
     const double prec = CV_PI * ANG_TH / 180;
     const double p = ANG_TH / 180;
-    const double rho = QUANT / sin(prec);    // gradient magnitude threshold
+    const double rho = QUANT / std::sin(prec);    // gradient magnitude threshold
 
     if(SCALE != 1)
     {
@@ -642,8 +643,8 @@ void LineSegmentDetectorImpl::region_grow(const Point2i& s, std::vector<RegionPo
                     reg.push_back(region_point);
 
                     // Update region's angle
-                    sumdx += cos(float(angle));
-                    sumdy += sin(float(angle));
+                    sumdx += std::cos(float(angle));
+                    sumdy += std::sin(float(angle));
                     // reg_angle is used in the isAligned, so it needs to be updates?
                     reg_angle = fastAtan2(sumdy, sumdx) * DEG_TO_RADS;
                 }
@@ -674,8 +675,8 @@ void LineSegmentDetectorImpl::region2rect(const std::vector<RegionPoint>& reg,
     double theta = get_theta(reg, x, y, reg_angle, prec);
 
     // Find length and width
-    double dx = cos(theta);
-    double dy = sin(theta);
+    double dx = std::cos(theta);
+    double dy = std::sin(theta);
     double l_min = 0, l_max = 0, w_min = 0, w_max = 0;
 
     for(size_t i = 0; i < reg.size(); ++i)
@@ -977,7 +978,6 @@ double LineSegmentDetectorImpl::rect_nfa(const rect& rec) const
     double top_y = ordered_y[0].y, bottom_y = ordered_y[2].y;
 
     // Loop around all points in the region and count those that are aligned.
-    std::vector<cv::Point> points;
     double left_limit, right_limit;
     for(int y = (int) ceil(top_y); y <= (int) ceil(bottom_y); ++y)
     {
@@ -1037,7 +1037,7 @@ double LineSegmentDetectorImpl::nfa(const int& n, const int& k, const double& p)
         bin_tail += term;
         if(bin_term < 1)
         {
-            double err = term * ((1 - pow(mult_term, double(n-i+1))) / (1 - mult_term) - 1);
+            double err = term * ((1 - std::pow(mult_term, double(n-i+1))) / (1 - mult_term) - 1);
             if(err < tolerance * fabs(-log10(bin_tail) - LOG_NT) * bin_tail) break;
         }
 

@@ -217,7 +217,7 @@ static void project_onto_jacobian_ECC(const Mat& src1, const Mat& src2, Mat& dst
         Mat mat;
         for (int i = 0; i < dst.rows; i++) {
             mat = Mat(src1.colRange(i * w, (i + 1) * w));
-            dstPtr[i * (dst.rows + 1)] = (float)pow(norm(mat), 2);  // diagonal elements
+            dstPtr[i * (dst.rows + 1)] = (float)std::pow(norm(mat), 2);  // diagonal elements
 
             for (int j = i + 1; j < dst.cols; j++) {  // j starts from i+1
                 dstPtr[i * dst.cols + j] = (float)mat.dot(src2.colRange(j * w, (j + 1) * w));
@@ -480,9 +480,16 @@ double cv::findTransformECCWithMask( InputArray templateImage,
     else
     {
         Mat preMaskFloat;
-        threshold(inputMask, preMask, 0, 1, THRESH_BINARY);
-
-        preMask.convertTo(preMaskFloat, CV_32F);
+        Mat inputMaskMat = inputMask.getMat();
+        if (inputMaskMat.depth() == CV_Bool)
+        {
+            inputMaskMat.convertTo(preMaskFloat, CV_32F);
+        }
+        else
+        {
+            threshold(inputMaskMat, preMask, 0, 1, THRESH_BINARY);
+            preMask.convertTo(preMaskFloat, CV_32F);
+        }
         GaussianBlur(preMaskFloat, preMaskFloat, Size(gaussFiltSize, gaussFiltSize), 0, 0);
         // Change threshold.
         preMaskFloat *= (0.5/0.95);

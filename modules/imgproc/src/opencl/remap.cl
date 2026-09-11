@@ -51,6 +51,13 @@
 #endif
 #endif
 
+#define CV_64F 6
+#if defined SRC_DEPTH && SRC_DEPTH == CV_64F
+#define WT1 double
+#else
+#define WT1 float
+#endif
+
 #define noconvert
 
 #if CN != 3
@@ -299,8 +306,8 @@ __kernel void remap_16SC2_16UC1(__global const uchar * srcptr, int src_step, int
                 __global T * dst = (__global T *)(dstptr + dst_index);
 
                 int map2Value = convert_int(map2[0]) & (INTER_TAB_SIZE2 - 1);
-                int dx = (map2Value & (INTER_TAB_SIZE - 1)) < (INTER_TAB_SIZE >> 1) ? 1 : 0;
-                int dy = (map2Value >> INTER_BITS) < (INTER_TAB_SIZE >> 1) ? 1 : 0;
+                int dx = (map2Value & (INTER_TAB_SIZE - 1)) >= (INTER_TAB_SIZE >> 1) ? 1 : 0;
+                int dy = (map2Value >> INTER_BITS) >= (INTER_TAB_SIZE >> 1) ? 1 : 0;
                 int2 gxy = convert_int2(map1[0]) + (int2)(dx, dy);
                 #if WARP_RELATIVE
                 gxy.x += x;
@@ -424,8 +431,8 @@ __kernel void remap_2_32FC1(__global const uchar * srcptr, int src_step, int src
             int sx = convert_int_rtn(X0);
             int sy = convert_int_rtn(Y0);
 
-            float ax = X0 - (float) sx;
-            float ay = Y0 - (float) sy;
+            WT1 ax = (WT1)(X0 - (float) sx);
+            WT1 ay = (WT1)(Y0 - (float) sy);
 
             int2 map_data0 = (int2)(sx, sy);
             int2 map_data1 = (int2)(sx+1, sy);
@@ -493,8 +500,8 @@ __kernel void remap_32FC2(__global const uchar * srcptr, int src_step, int src_o
             int sx = convert_int_rtn(X0);
             int sy = convert_int_rtn(Y0);
 
-            float ax = X0 - (float) sx;
-            float ay = Y0 - (float) sy;
+            WT1 ax = (WT1)(X0 - (float) sx);
+            WT1 ay = (WT1)(Y0 - (float) sy);
 
             int2 map_data0 = (int2)(sx, sy);
             int2 map_data1 = (int2)(sx+1, sy);

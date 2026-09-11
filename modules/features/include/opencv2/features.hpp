@@ -50,6 +50,10 @@
 #include "opencv2/flann/miniflann.hpp"
 #endif
 
+#ifdef HAVE_OPENCV_DNN
+#include "opencv2/dnn.hpp"
+#endif
+
 /**
   @defgroup features Features Framework
   @{
@@ -130,6 +134,91 @@ public:
     static void retainBest( std::vector<KeyPoint>& keypoints, int npoints );
 };
 
+/** @brief Determines strong corners on an image.
+
+The function finds the most prominent corners in the image or in the specified image region, as
+described in @cite Shi94
+
+-   Function calculates the corner quality measure at every source image pixel using the
+    #cornerMinEigenVal or #cornerHarris .
+-   Function performs a non-maximum suppression (the local maximums in *3 x 3* neighborhood are
+    retained).
+-   The corners with the minimal eigenvalue less than
+    \f$\texttt{qualityLevel} \cdot \max_{x,y} qualityMeasureMap(x,y)\f$ are rejected.
+-   The remaining corners are sorted by the quality measure in the descending order.
+-   Function throws away each corner for which there is a stronger corner at a distance less than
+    maxDistance.
+
+The function can be used to initialize a point-based tracker of an object.
+
+@note If the function is called with different values A and B of the parameter qualityLevel , and
+A \> B, the vector of returned corners with qualityLevel=A will be the prefix of the output vector
+with qualityLevel=B .
+
+@param image Input 8-bit or floating-point 32-bit, single-channel image.
+@param corners Output vector of detected corners.
+@param maxCorners Maximum number of corners to return. If there are more corners than are found,
+the strongest of them is returned. `maxCorners <= 0` implies that no limit on the maximum is set
+and all detected corners are returned.
+@param qualityLevel Parameter characterizing the minimal accepted quality of image corners. The
+parameter value is multiplied by the best corner quality measure, which is the minimal eigenvalue
+(see #cornerMinEigenVal ) or the Harris function response (see #cornerHarris ). The corners with the
+quality measure less than the product are rejected. For example, if the best corner has the
+quality measure = 1500, and the qualityLevel=0.01 , then all the corners with the quality measure
+less than 15 are rejected.
+@param minDistance Minimum possible Euclidean distance between the returned corners.
+@param mask Optional region of interest. If the image is not empty (it needs to have the type
+CV_8UC1 and the same size as image ), it specifies the region in which the corners are detected.
+@param blockSize Size of an average block for computing a derivative covariation matrix over each
+pixel neighborhood. See cornerEigenValsAndVecs .
+@param useHarrisDetector Parameter indicating whether to use a Harris detector (see #cornerHarris)
+or #cornerMinEigenVal.
+@param k Free parameter of the Harris detector.
+
+@sa  cornerMinEigenVal, cornerHarris, calcOpticalFlowPyrLK, estimateRigidTransform,
+ */
+
+CV_EXPORTS_W void goodFeaturesToTrack( InputArray image, OutputArray corners,
+                                     int maxCorners, double qualityLevel, double minDistance,
+                                     InputArray mask = noArray(), int blockSize = 3,
+                                     bool useHarrisDetector = false, double k = 0.04 );
+
+CV_EXPORTS_W void goodFeaturesToTrack( InputArray image, OutputArray corners,
+                                     int maxCorners, double qualityLevel, double minDistance,
+                                     InputArray mask, int blockSize,
+                                     int gradientSize, bool useHarrisDetector = false,
+                                     double k = 0.04 );
+
+/** @brief Same as above, but returns also quality measure of the detected corners.
+
+@param image Input 8-bit or floating-point 32-bit, single-channel image.
+@param corners Output vector of detected corners.
+@param maxCorners Maximum number of corners to return. If there are more corners than are found,
+the strongest of them is returned. `maxCorners <= 0` implies that no limit on the maximum is set
+and all detected corners are returned.
+@param qualityLevel Parameter characterizing the minimal accepted quality of image corners. The
+parameter value is multiplied by the best corner quality measure, which is the minimal eigenvalue
+(see #cornerMinEigenVal ) or the Harris function response (see #cornerHarris ). The corners with the
+quality measure less than the product are rejected. For example, if the best corner has the
+quality measure = 1500, and the qualityLevel=0.01 , then all the corners with the quality measure
+less than 15 are rejected.
+@param minDistance Minimum possible Euclidean distance between the returned corners.
+@param mask Region of interest. If the image is not empty (it needs to have the type
+CV_8UC1 and the same size as image ), it specifies the region in which the corners are detected.
+@param cornersQuality Output vector of quality measure of the detected corners.
+@param blockSize Size of an average block for computing a derivative covariation matrix over each
+pixel neighborhood. See cornerEigenValsAndVecs .
+@param gradientSize Aperture parameter for the Sobel operator used for derivatives computation.
+See cornerEigenValsAndVecs .
+@param useHarrisDetector Parameter indicating whether to use a Harris detector (see #cornerHarris)
+or #cornerMinEigenVal.
+@param k Free parameter of the Harris detector.
+ */
+CV_EXPORTS CV_WRAP_AS(goodFeaturesToTrackWithQuality) void goodFeaturesToTrack(
+        InputArray image, OutputArray corners,
+        int maxCorners, double qualityLevel, double minDistance,
+        InputArray mask, OutputArray cornersQuality, int blockSize = 3,
+        int gradientSize = 3, bool useHarrisDetector = false, double k = 0.04);
 
 /************************************ Base Classes ************************************/
 
@@ -563,7 +652,7 @@ public:
     CV_WRAP static Ptr<GFTTDetector> create( int maxCorners=1000, double qualityLevel=0.01, double minDistance=1,
                                              int blockSize=3, bool useHarrisDetector=false, double k=0.04 );
     CV_WRAP static Ptr<GFTTDetector> create( int maxCorners, double qualityLevel, double minDistance,
-                                             int blockSize, int gradiantSize, bool useHarrisDetector=false, double k=0.04 );
+                                             int blockSize, int gradientSize, bool useHarrisDetector=false, double k=0.04 );
     CV_WRAP virtual void setMaxFeatures(int maxFeatures) = 0;
     CV_WRAP virtual int getMaxFeatures() const = 0;
 
@@ -584,8 +673,138 @@ public:
 
     CV_WRAP virtual void setK(double k) = 0;
     CV_WRAP virtual double getK() const = 0;
+
     CV_WRAP virtual String getDefaultName() const CV_OVERRIDE;
 };
+
+#if defined(HAVE_OPENCV_DNN) || defined(CV_DOXYGEN)
+
+/** @brief DISK feature detector and descriptor, based on a DNN model.
+
+DISK (Deep Image Structure and Keypoints) is a learned local-feature pipeline that produces
+keypoints and 128-D L2-normalized descriptors via a single forward pass through a fully
+convolutional network. This class wraps an ONNX export of the pre-trained DISK model through
+cv::dnn::Net and exposes it under the standard cv::Feature2D interface so it can be used as
+a drop-in alternative to SIFT/ORB.
+
+The class assumes the ONNX model has a single input named `image` taking an N×3×H×W float32
+tensor in [0, 1] (RGB channel order) and three outputs named `keypoints` (N×2), `scores` (N)
+and `descriptors` (N×128).
+ */
+class CV_EXPORTS_W DISK : public Feature2D
+{
+public:
+    /** @brief Creates a DISK detector.
+    @param modelPath Path to the DISK ONNX model.
+    @param maxKeypoints Maximum number of keypoints to return per image. The strongest
+                        responses (by network score) are kept; -1 keeps all detections.
+    @param scoreThreshold Discard keypoints with network score strictly below this value.
+    @param imageSize Target input size (width, height) fed to the network. Use Size()
+                     (the default) to fall back to the network's expected fixed input
+                     shape of 1024x1024. When overriding, both dimensions must be
+                     positive multiples of 16, since DISK downsamples by a factor of 16.
+    @param backendId DNN backend identifier (see cv::dnn::Backend); 0 = DNN_BACKEND_DEFAULT.
+    @param targetId  DNN target identifier (see cv::dnn::Target);  0 = DNN_TARGET_CPU.
+    */
+    CV_WRAP static Ptr<DISK> create(const String& modelPath,
+                                    int maxKeypoints = -1,
+                                    float scoreThreshold = 0.0f,
+                                    const Size& imageSize = Size(),
+                                    int backendId = 0,
+                                    int targetId = 0);
+
+    /** @brief Creates a DISK detector from an in-memory model buffer.
+
+    This overload loads the DISK ONNX model from a buffer instead of a file on disk. It is
+    intended for cases where the model is read from application resources (for example Android
+    assets) and is not available as a path on the filesystem.
+
+    @param bufferModel A buffer containing the contents of the DISK ONNX model.
+    @param maxKeypoints Maximum number of keypoints to return per image. The strongest
+                        responses (by network score) are kept; -1 keeps all detections.
+    @param scoreThreshold Discard keypoints with network score strictly below this value.
+    @param imageSize Target input size (width, height) fed to the network. Use Size()
+                     (the default) to fall back to the network's expected fixed input
+                     shape of 1024x1024. When overriding, both dimensions must be
+                     positive multiples of 16, since DISK downsamples by a factor of 16.
+    @param backendId DNN backend identifier (see cv::dnn::Backend); 0 = DNN_BACKEND_DEFAULT.
+    @param targetId  DNN target identifier (see cv::dnn::Target);  0 = DNN_TARGET_CPU.
+
+    @note In C++ this is an overload of @ref create. The Python/Java/Objective-C bindings expose
+          it as `createFromMemory`, because Objective-C selectors are not disambiguated by argument
+          type and would otherwise clash with the file-path @ref create.
+    */
+    CV_WRAP_AS(createFromMemory) static Ptr<DISK> create(const std::vector<uchar>& bufferModel,
+                                    int maxKeypoints = -1,
+                                    float scoreThreshold = 0.0f,
+                                    const Size& imageSize = Size(),
+                                    int backendId = 0,
+                                    int targetId = 0);
+
+    CV_WRAP virtual void setMaxKeypoints(int maxKeypoints) = 0;
+    CV_WRAP virtual int  getMaxKeypoints() const = 0;
+
+    CV_WRAP virtual void  setScoreThreshold(float threshold) = 0;
+    CV_WRAP virtual float getScoreThreshold() const = 0;
+
+    CV_WRAP virtual void setImageSize(const Size& size) = 0;
+    CV_WRAP virtual Size getImageSize() const = 0;
+
+    CV_WRAP virtual String getDefaultName() const CV_OVERRIDE;
+};
+
+/** @brief XFeat feature detector and descriptor, based on a DNN model.
+
+XFeat is a compact learned local-feature extractor. This class wraps an ONNX export through
+cv::dnn::Net and exposes score-map detections with 64-D float descriptors under the standard
+cv::Feature2D interface.
+
+The class assumes the ONNX model has a single grayscale input tensor N×1×H×W in [0, 1] and
+returns descriptor and score maps. The descriptor map must have 64 channels, and the keypoint
+logit map must have either 64 channels (no extra class) or 65 channels, where the last channel
+is treated as a dustbin/background class used only in softmax normalization. Images are resized
+with preserved aspect ratio and padded to the configured network input size.
+ */
+class CV_EXPORTS_W XFeat : public Feature2D
+{
+public:
+    /** @brief Creates an XFeat detector.
+    @param modelPath Path to the XFeat ONNX model.
+    @param maxKeypoints Maximum number of keypoints to return per image. The strongest
+                        responses are kept; -1 keeps all detections.
+    @param scoreThreshold Discard keypoints with network score not greater than this value.
+    @param inputSize Input size fed to the network, default Size(640, 640).
+    @param backendId DNN backend identifier (see cv::dnn::Backend); 0 = DNN_BACKEND_DEFAULT.
+    @param targetId  DNN target identifier (see cv::dnn::Target);  0 = DNN_TARGET_CPU.
+    */
+    CV_WRAP static Ptr<XFeat> create(const String& modelPath,
+                                     int maxKeypoints = -1,
+                                     float scoreThreshold = 0.5f,
+                                     const Size& inputSize = Size(640, 640),
+                                     int backendId = 0,
+                                     int targetId = 0);
+
+    /** @brief Creates an XFeat detector from an in-memory model buffer. */
+    CV_WRAP_AS(createFromMemory) static Ptr<XFeat> create(const std::vector<uchar>& bufferModel,
+                                     int maxKeypoints = -1,
+                                     float scoreThreshold = 0.5f,
+                                     const Size& inputSize = Size(640, 640),
+                                     int backendId = 0,
+                                     int targetId = 0);
+
+    CV_WRAP virtual void setMaxKeypoints(int maxKeypoints) = 0;
+    CV_WRAP virtual int  getMaxKeypoints() const = 0;
+
+    CV_WRAP virtual void  setScoreThreshold(float threshold) = 0;
+    CV_WRAP virtual float getScoreThreshold() const = 0;
+
+    CV_WRAP virtual void setInputSize(const Size& inputSize) = 0;
+    CV_WRAP virtual Size getInputSize() const = 0;
+
+    CV_WRAP virtual String getDefaultName() const CV_OVERRIDE;
+};
+
+#endif // HAVE_OPENCV_DNN || CV_DOXYGEN
 
 /** @brief Class for extracting blobs from an image. :
 
@@ -645,6 +864,11 @@ public:
       CV_PROP_RW bool filterByConvexity;
       CV_PROP_RW float minConvexity, maxConvexity;
 
+      /** @brief Flag to enable contour collection.
+      If set to true, the detector will store the contours of the detected blobs in memory,
+      which can be retrieved after the detect() call using getBlobContours().
+      @note Default value is false.
+      */
       CV_PROP_RW bool collectContours;
 
       void read( const FileNode& fn );
@@ -658,7 +882,52 @@ public:
   CV_WRAP virtual SimpleBlobDetector::Params getParams() const = 0;
 
   CV_WRAP virtual String getDefaultName() const CV_OVERRIDE;
+
+  /** @brief Returns the contours of the blobs detected during the last call to detect().
+  @note The @ref Params::collectContours parameter must be set to true before calling
+  detect() for this method to return any data.
+  */
   CV_WRAP virtual const std::vector<std::vector<cv::Point> >& getBlobContours() const = 0;
+};
+
+/** @brief ALIKED feature detector and descriptor extractor.
+
+ALIKED (A Lightweight Image KEYpoint Detector) is a CNN-based feature detector and descriptor
+extractor, as described in @cite Zhao23 . It produces 128-dimensional float descriptors and
+keypoints with sub-pixel accuracy.
+
+The model expects RGB input [1,3,H,W] and internally converts BGR images to RGB.
+*/
+class CV_EXPORTS_W ALIKED : public Feature2D
+{
+protected:
+    ALIKED();
+public:
+    virtual ~ALIKED();
+
+    struct CV_EXPORTS_W_SIMPLE Params
+    {
+        CV_WRAP Params();
+        CV_PROP_RW Size inputSize;              //!< Input image size for the network, default 640x640
+        CV_PROP_RW bool normalizeDescriptors;   //!< Whether to L2-normalize descriptors, default true
+        CV_PROP_RW int engine;                  //!< DNN engine type (dnn::EngineType), default ENGINE_AUTO
+        CV_PROP_RW int backend;                 //!< DNN backend, default DNN_BACKEND_DEFAULT
+        CV_PROP_RW int target;                  //!< DNN target, default DNN_TARGET_CPU
+    };
+
+    /** @brief Creates ALIKED from a model file path.
+    @param modelPath Path to the ONNX model file.
+    @param params ALIKED parameters.
+    */
+    CV_WRAP static Ptr<ALIKED> create(const String& modelPath, const ALIKED::Params& params = ALIKED::Params());
+
+#ifdef HAVE_OPENCV_DNN
+    /** @brief Creates ALIKED from in-memory model data.
+    @param modelData Buffer containing the model data.
+    @param params ALIKED parameters.
+    */
+    static Ptr<ALIKED> create(const std::vector<uchar>& modelData, const ALIKED::Params& params = ALIKED::Params());
+#endif
 };
 
 
@@ -779,6 +1048,19 @@ public:
     /** @brief Returns true if the descriptor matcher supports masking permissible matches.
      */
     CV_WRAP virtual bool isMaskSupported() const = 0;
+
+    /** @brief Provides keypoint and image-size context for matchers that need it (e.g. LightGlueMatcher).
+
+    Must be called before match()/knnMatch()/radiusMatch() for matchers that require this context.
+    Matchers that don't need it (e.g. BFMatcher, FlannBasedMatcher) ignore the call.
+
+    @param queryKpts Query image keypoints.
+    @param trainKpts Train image keypoints.
+    @param queryImageSize Size of the query image (width, height).
+    @param trainImageSize Size of the train image (width, height).
+    */
+    CV_WRAP virtual void setImagePairInfo(const std::vector<KeyPoint>& queryKpts, const std::vector<KeyPoint>& trainKpts,
+                                          Size queryImageSize = Size(), Size trainImageSize = Size());
 
     /** @brief Trains a descriptor matcher
 
@@ -1002,7 +1284,7 @@ public:
 
     virtual ~BFMatcher() {}
 
-    virtual bool isMaskSupported() const CV_OVERRIDE { return true; }
+    virtual bool isMaskSupported() const CV_OVERRIDE { return !crossCheck; }
 
     /** @brief Brute-force matcher create method.
     @param normType One of NORM_L1, NORM_L2, NORM_HAMMING, NORM_HAMMING2. L1 and L2 norms are
@@ -1077,6 +1359,65 @@ protected:
 };
 
 #endif
+
+/** @brief LightGlue feature matcher.
+
+LightGlue is a CNN-based feature matcher, as described in @cite Lindenberger23 . It takes
+keypoint locations and descriptors from two images and directly predicts match pairs. Unlike
+traditional matchers that compute descriptor distances, LightGlue uses attention mechanisms
+to produce confidence scores for each potential match pair.
+
+The matcher extends DescriptorMatcher and supports the standard match(), knnMatch(), and
+radiusMatch() interfaces. Context (keypoints and image sizes) must be provided via
+setPairInfo() before matching.
+*/
+class CV_EXPORTS_W LightGlueMatcher : public DescriptorMatcher
+{
+protected:
+    LightGlueMatcher();
+public:
+    virtual ~LightGlueMatcher();
+
+    /** @brief Creates LightGlueMatcher from a model file path.
+    @param modelPath Path to the ONNX model file.
+    @param scoreThreshold Match confidence threshold.
+    @param backend DNN backend
+    @param target DNN target
+    */
+    CV_WRAP static Ptr<LightGlueMatcher> create(const String& modelPath, float scoreThreshold = 0.0f, int backend = 0, int target = 0);
+
+#ifdef HAVE_OPENCV_DNN
+    /** @brief Creates LightGlueMatcher from in-memory model data.
+    @param modelData Buffer containing the model data.
+    @param scoreThreshold Match confidence threshold.
+    @param backend DNN backend
+    @param target DNN target
+    */
+    CV_WRAP_AS(createFromMemory) static Ptr<LightGlueMatcher> create(const std::vector<uchar>& modelData, float scoreThreshold = 0.0f, int backend = 0, int target = 0);
+#endif
+
+    /** @brief Sets the keypoint and image size context for the next match() call.
+
+    This provides the spatial context that LightGlue needs in addition to descriptors.
+    Must be called before match()/knnMatch()/radiusMatch() unless using automatic context
+    from in-process ALIKED instances.
+
+    @param queryKpts Query image keypoints (Nx2 float matrix with x,y coordinates).
+    @param trainKpts Train image keypoints (Nx2 float matrix with x,y coordinates).
+    @param queryImageSize Size of the query image (width, height).
+    @param trainImageSize Size of the train image (width, height).
+    */
+    CV_WRAP virtual void setPairInfo(InputArray queryKpts, InputArray trainKpts,
+                                     Size queryImageSize = Size(), Size trainImageSize = Size()) = 0;
+
+    /** @brief Clears stored pair context information.
+    */
+    CV_WRAP virtual void clearPairInfo() = 0;
+
+    /** @brief Convenience overload of setPairInfo() taking keypoints directly. */
+    CV_WRAP void setImagePairInfo(const std::vector<KeyPoint>& queryKpts, const std::vector<KeyPoint>& trainKpts,
+                                  Size queryImageSize = Size(), Size trainImageSize = Size()) CV_OVERRIDE;
+};
 
 //! @} features_match
 

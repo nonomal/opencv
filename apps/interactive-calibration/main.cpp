@@ -3,7 +3,7 @@
 // of this distribution and at http://opencv.org/license.html.
 
 #include <opencv2/core.hpp>
-#include <opencv2/3d.hpp>
+#include <opencv2/geometry.hpp>
 #include <opencv2/calib.hpp>
 #include <opencv2/cvconfig.h>
 #include <opencv2/highgui.hpp>
@@ -53,7 +53,7 @@ const char* keys  =
         "DICT_4X4_50, DICT_4X4_100, DICT_4X4_250, DICT_4X4_1000, DICT_5X5_50, DICT_5X5_100, DICT_5X5_250, "
         "DICT_5X5_1000, DICT_6X6_50, DICT_6X6_100, DICT_6X6_250, DICT_6X6_1000, DICT_7X7_50, DICT_7X7_100, "
         "DICT_7X7_250, DICT_7X7_1000, DICT_ARUCO_ORIGINAL, DICT_APRILTAG_16h5, DICT_APRILTAG_25h9, "
-        "DICT_APRILTAG_36h10, DICT_APRILTAG_36h11 }"
+        "DICT_APRILTAG_36h10, DICT_APRILTAG_36h11, DICT_ARUCO_MIP_36h12 }"
         "{fad      | None    | name of file with ArUco dictionary}"
         "{of       | cameraParameters.xml | Output file name}"
         "{ft       | true    | Auto tuning of calibration flags}"
@@ -122,8 +122,11 @@ int main(int argc, char** argv)
     std::cout << consoleHelp << std::endl;
     parametersController paramsController;
 
-    if(!paramsController.loadFromParser(parser))
+    if(!paramsController.loadFromParser(parser) || !parser.check())
+    {
+        parser.printErrors();
         return 0;
+    }
 
     captureParameters capParams = paramsController.getCaptureParameters();
     internalParameters intParams = paramsController.getInternalParameters();

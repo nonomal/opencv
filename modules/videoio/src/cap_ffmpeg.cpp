@@ -88,7 +88,7 @@ public:
 
     virtual double getProperty_(int propId) const CV_OVERRIDE
     {
-        return ffmpegCapture ? icvGetCaptureProperty_FFMPEG_p(ffmpegCapture, propId) : 0;
+        return ffmpegCapture ? icvGetCaptureProperty_FFMPEG_p(ffmpegCapture, propId) : static_cast<double>(CAP_PROP_UNKNOWN);
     }
     virtual bool setProperty_(int propId, double value) CV_OVERRIDE
     {
@@ -201,21 +201,25 @@ public:
 
     int getCaptureDomain() const CV_OVERRIDE { return cv::CAP_FFMPEG; }
 
-    virtual void write(cv::InputArray image ) CV_OVERRIDE
+    virtual bool write(cv::InputArray image ) CV_OVERRIDE
     {
         if(!ffmpegWriter)
-            return;
+            return false;
         CV_Assert(image.depth() == CV_8U || image.depth() == CV_16U);
 
         // if UMat, try GPU to GPU copy using OpenCL extensions
         if (image.isUMat()) {
             if (ffmpegWriter->writeHWFrame(image)) {
-                return;
+                return true;
             }
         }
 
         if (!icvWriteFrame_FFMPEG_p(ffmpegWriter, (const uchar*)image.getMat().ptr(), (int)image.step(), image.cols(), image.rows(), image.channels(), 0))
+        {
             CV_LOG_WARNING(NULL, "FFmpeg: Failed to write frame");
+            return false;
+        }
+        return true;
     }
     virtual bool open( const cv::String& filename, int fourcc, double fps, cv::Size frameSize, const VideoWriterParameters& params )
     {
@@ -234,7 +238,7 @@ public:
 
     virtual double getProperty(int propId) const CV_OVERRIDE {
         if(!ffmpegWriter)
-            return 0;
+            return VIDEOWRITER_PROP_UNKNOWN;
         return ffmpegWriter->getProperty(propId);
     }
 

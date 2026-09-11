@@ -557,9 +557,9 @@ TEST(Drawing, _914)
     line(img, Point(-5, 20), Point(260, 20), Scalar(0), 2, 4);
     line(img, Point(10, 0), Point(10, 255), Scalar(0), 2, 4);
 
-    double x0 = 0.0/pow(2.0, -2.0);
-    double x1 = 255.0/pow(2.0, -2.0);
-    double y = 30.5/pow(2.0, -2.0);
+    double x0 = 0.0/std::pow(2, -2);
+    double x1 = 255.0/std::pow(2, -2);
+    double y = 30.5/std::pow(2, -2);
 
     line(img, Point(int(x0), int(y)), Point(int(x1), int(y)), Scalar(0), 2, 4, 2);
 
@@ -779,6 +779,7 @@ TEST(Drawing, ttf_text)
          "historia, ruégote que no te olvides de mi buen Rocinante,\n"
          "compañero eterno mío en todos mis caminos y carreras!\n", false, 300, false},
         {"Ταχίστη αλώπηξ βαφής ψημένη γη, δρασκελίζει υπέρ νωθρού κυνός.", false, 400, false},
+        {"العربية لغة جميلة، والخط العربي فن.", false, 400, false},
         {"春眠不觉晓，\n处处闻啼鸟。\n夜来风雨声，\n花落知多少。\n"
         " あなたはそれが困難見つけた場合 — あなたは正しい方向に向かっている。\n"
         " 넌 모든 꽃들을 다 꺾어버릴 수는 있겠지만, 봄이 오는 걸 막을 수는 없어。 ", false, 400, false}
@@ -841,10 +842,12 @@ TEST(Drawing, ttf_text)
     }
 
 #if 0
-    //imwrite(ts_data_path + "../highgui/drawing/text_test.png", img);
+    //imwrite(ts_data_path + "../highgui/drawing/text_test_new.png", img);
     imshow("test", img);
     waitKey();
 #else
+    // Always dump the rendered image for visual inspection (HarfBuzz engine bring-up).
+    //imwrite("ttf_text_actual.png", img);
     Mat refimg = imread(ts_data_path + "../highgui/drawing/text_test.png", IMREAD_UNCHANGED);
     //imshow("ref", refimg);
     //imshow("actual", img);
@@ -856,6 +859,32 @@ TEST(Drawing, ttf_text)
 #endif
 }
 #endif
+
+// Experiment (not a regression test): render Arabic + Devanagari with FiraGO,
+// which covers both scripts, and dump a PNG for visual inspection.
+TEST(Drawing, DISABLED_firago_experiment)
+{
+    // FiraGO covers both Arabic and Devanagari. It is optional test data:
+    // findDataFile(..., /*required=*/false) throws SkipTestException when the
+    // font is absent, so the test is reported as skipped rather than failing.
+    string fontpath = findDataFile("../highgui/drawing/FiraGo-Book.ttf", false);
+    FontFace fira(fontpath);
+
+    Mat img(360, 1000, CV_8UC3, Scalar::all(255));
+    Scalar color(40, 40, 40);
+    int x0 = 40, y = 70;
+
+    putText(img, "FiraGO: Arabic + Devanagari", Point(x0, y), color, fira, 30, 500,
+            PUT_TEXT_ALIGN_LEFT, Range());
+    y += 90;
+    putText(img, "العربية لغة جميلة، والخط العربي فن.", Point(x0, y), color, fira, 48, 400,
+            PUT_TEXT_ALIGN_LEFT, Range());
+    y += 100;
+    putText(img, "नमस्ते दुनिया — संस्कृतम् सुन्दरम् अस्ति।", Point(x0, y), color, fira, 48, 400,
+            PUT_TEXT_ALIGN_LEFT, Range());
+
+    imwrite("firago_experiment.png", img);
+}
 
 TEST(Drawing, fillpoly_contours)
 {
@@ -1110,7 +1139,7 @@ PARAM_TEST_CASE(FillPolyFully, unsigned, unsigned, int, int, Point, cv::LineType
     }
 };
 
-TEST_P(FillPolyFully, DISABLED_fillpoly_fully)
+TEST_P(FillPolyFully, fillpoly_fully)
 {
     int imageSizeOffset = 15;
 
@@ -1279,6 +1308,49 @@ TEST(Drawing, contours_filled)
             drawContours(res, contours, idx + 1, white, -1, cv::LINE_4, hierarchy);
         EXPECT_LT(cvtest::norm(imgi, res, NORM_INF), 1);
     }
+}
+
+// Test for LINE_4 vs LINE_8 connectivity behavior
+// Regression test for issue #26413
+TEST(Drawing, line_connectivity_regression_26413)
+{
+    Mat img4(10, 10, CV_8UC1, Scalar(0));
+    Mat img8(10, 10, CV_8UC1, Scalar(0));
+
+    // Draw a diagonal line from (0,0) to (9,9)
+    // LINE_4 (4-connected) should produce staircase pattern (no diagonals)
+    // LINE_8 (8-connected) should produce diagonal steps
+    line(img4, Point(0, 0), Point(9, 9), Scalar(255), 1, LINE_4);
+    line(img8, Point(0, 0), Point(9, 9), Scalar(255), 1, LINE_8);
+
+    int count4 = countNonZero(img4);
+    int count8 = countNonZero(img8);
+
+    // LINE_8 for a 10-pixel diagonal should have exactly 10 pixels
+    EXPECT_EQ(10, count8) << "LINE_8 diagonal from (0,0) to (9,9) should have 10 pixels";
+
+    // LINE_4 for a 10-pixel diagonal should have approximately 19 pixels
+    // (needs both horizontal and vertical steps)
+    EXPECT_GT(count4, 15) << "LINE_4 diagonal should have significantly more pixels due to staircase";
+}
+
+//This test ensures that the tipLength geometric ratio is strictly bounded  within the logical range (0.0, 1.0].
+TEST(Imgproc_Drawing, arrowedLine_tipLength_validation)
+{
+    // Create a simple miniature canvas for testing. Added cv:: prefix.
+    cv::Mat img = cv::Mat::zeros(100, 100, CV_8UC3);
+    cv::Point pt1(10, 10), pt2(90, 90);
+
+    // 1. Validate legal parameters: should not throw any exceptions (Normal cases)
+    EXPECT_NO_THROW(cv::arrowedLine(img, pt1, pt2, cv::Scalar(255, 255, 255), 1, 8, 0, 0.1));
+    EXPECT_NO_THROW(cv::arrowedLine(img, pt1, pt2, cv::Scalar(255, 255, 255), 1, 8, 0, 1.0));
+
+    // 2. Validate illegal parameters: expect cv::Exception to be thrown (Boundary violations)
+    // Negative ratio (tipLength <= 0.0)
+    EXPECT_THROW(cv::arrowedLine(img, pt1, pt2, cv::Scalar(255, 255, 255), 1, 8, 0, -0.5), cv::Exception);
+
+    // Overflow ratio (tipLength > 1.0)
+    EXPECT_THROW(cv::arrowedLine(img, pt1, pt2, cv::Scalar(255, 255, 255), 1, 8, 0, 1.5), cv::Exception);
 }
 
 }} // namespace

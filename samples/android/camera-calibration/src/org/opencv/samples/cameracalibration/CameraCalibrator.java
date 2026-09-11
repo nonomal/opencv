@@ -3,7 +3,7 @@ package org.opencv.samples.cameracalibration;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.opencv.cv3d.Cv3d;
+import org.opencv.geometry.Geometry;
 import org.opencv.calib.Calib;
 import org.opencv.core.Core;
 import org.opencv.core.CvType;
@@ -15,6 +15,7 @@ import org.opencv.core.Point;
 import org.opencv.core.Scalar;
 import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
+import org.opencv.objdetect.Objdetect;
 
 import android.util.Log;
 
@@ -108,7 +109,7 @@ public class CameraCalibrator {
         int totalPoints = 0;
         for (int i = 0; i < objectPoints.size(); i++) {
             MatOfPoint3f points = new MatOfPoint3f(objectPoints.get(i));
-            Cv3d.projectPoints(points, rvecs.get(i), tvecs.get(i),
+            Geometry.projectPoints(points, rvecs.get(i), tvecs.get(i),
                     mCameraMatrix, distortionCoefficients, cornersProjected);
             error = Core.norm(mCornersBuffer.get(i), cornersProjected, Core.NORM_L2);
 
@@ -124,8 +125,8 @@ public class CameraCalibrator {
     }
 
     private void findPattern(Mat grayFrame) {
-        mPatternWasFound = Calib.findCirclesGrid(grayFrame, mPatternSize,
-                mCorners, Calib.CALIB_CB_ASYMMETRIC_GRID);
+        mPatternWasFound = Objdetect.findCirclesGrid(grayFrame, mPatternSize,
+                mCorners, Objdetect.CALIB_CB_ASYMMETRIC_GRID);
     }
 
     public void addCorners() {
@@ -135,7 +136,7 @@ public class CameraCalibrator {
     }
 
     private void drawPoints(Mat rgbaFrame) {
-        Calib.drawChessboardCorners(rgbaFrame, mPatternSize, mCorners, mPatternWasFound);
+        Objdetect.drawChessboardCorners(rgbaFrame, mPatternSize, mCorners, mPatternWasFound);
     }
 
     private void renderFrame(Mat rgbaFrame) {

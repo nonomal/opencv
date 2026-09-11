@@ -110,6 +110,8 @@ protected:
             int test_int = (int)cvtest::randInt(rng);
             double test_real = (cvtest::randInt(rng)%2?1:-1)*exp(cvtest::randReal(rng)*18-9);
             string test_string = "vw wv23424rt\"&amp;&lt;&gt;&amp;&apos;@#$@$%$%&%IJUKYILFD@#$@%$&*&() ";
+            bool bool_true = true;
+            bool bool_false = false;
 
             int depth = cvtest::randInt(rng) % (CV_64F+1);
             int cn = cvtest::randInt(rng) % 4 + 1;
@@ -153,6 +155,7 @@ protected:
                                        cvtest::randInt(rng) % 10000, 0, 100, rng);
 
             fs << "test_int" << test_int << "test_real" << test_real << "test_string" << test_string;
+            fs << "test_true" << bool_true << "test_false" << bool_false;
             fs << "test_mat" << test_mat;
             fs << "test_mat_nd" << test_mat_nd;
             fs << "test_sparse_mat" << test_sparse_mat;
@@ -185,6 +188,17 @@ protected:
                real_string != test_string )
             {
                 ts->printf( cvtest::TS::LOG, "the read scalars are not correct\n" );
+                ts->set_failed_test_info( cvtest::TS::FAIL_INVALID_OUTPUT );
+                return;
+            }
+
+            bool real_true;
+            bool real_false;
+            fs["test_true"] >> real_true;
+            fs["test_false"] >> real_false;
+            if (!real_true || real_false)
+            {
+                ts->printf( cvtest::TS::LOG, "the read boolean value is not correct\n" );
                 ts->set_failed_test_info( cvtest::TS::FAIL_INVALID_OUTPUT );
                 return;
             }
@@ -499,7 +513,7 @@ TEST(Core_InputOutput, FileStorageKey)
     EXPECT_NO_THROW(f << "key1" << "value1");
     EXPECT_NO_THROW(f << "_key2" << "value2");
     EXPECT_NO_THROW(f << "key_3" << "value3");
-    const std::string expected = "%YAML:1.0\n---\nkey1: value1\n_key2: value2\nkey_3: value3\n";
+    const std::string expected = "%YAML 1.2\n---\nkey1: value1\n_key2: value2\nkey_3: value3\n";
     ASSERT_STREQ(f.releaseAndGetString().c_str(), expected.c_str());
 }
 
@@ -839,6 +853,61 @@ TEST(Core_InputOutput, filestorage_heap_overflow)
     // This just shouldn't segfault, otherwise it's fine
     EXPECT_ANY_THROW(FileStorage(name, FileStorage::READ));
     EXPECT_EQ(0, remove(name.c_str()));
+}
+
+TEST(Core_InputOutput, filestorage_nd_matrix_too_many_dims)
+{
+    // A declared dimension count above CV_MAX_DIM used to write the sizes list
+    // past the fixed-size sizes[CV_MAX_DIM] stack buffer in cv::read().
+    std::string sizes;
+    for (int i = 0; i < CV_MAX_DIM + 8; i++)
+        sizes += "2, ";
+    sizes += "2";
+
+    const std::string content =
+        "%YAML:1.0\n---\n"
+        "m: !!opencv-nd-matrix\n"
+        "   sizes: [ " + sizes + " ]\n"
+        "   dt: f\n"
+        "   data: [ 0., 0. ]\n"
+        "sm: !!opencv-sparse-matrix\n"
+        "   sizes: [ " + sizes + " ]\n"
+        "   dt: f\n"
+        "   data: [ ]\n";
+
+    FileStorage fs(content, FileStorage::READ | FileStorage::MEMORY);
+
+    Mat m;
+    EXPECT_ANY_THROW(fs["m"] >> m);
+
+    SparseMat sm;
+    EXPECT_ANY_THROW(fs["sm"] >> sm);
+}
+
+TEST(Core_InputOutput, filestorage_matrix_dt_too_long)
+{
+    // A "dt" string with many distinct adjacent types makes decodeFormat()
+    // emit more pairs than the caller buffer holds. decodeSimpleFormat() sized
+    // its fmt_pairs buffer as CV_FS_MAX_FMT_PAIRS ints while decodeFormat writes
+    // up to 2*CV_FS_MAX_FMT_PAIRS ints, so a long enough dt wrote past the stack
+    // buffer before the length guard could reject it.
+    // CV_FS_MAX_FMT_PAIRS is 128; well over 2x that many distinct pairs.
+    std::string dt;
+    for (int i = 0; i < 300; i++)
+        dt += (i & 1) ? 'c' : 'u';
+
+    const std::string content =
+        "%YAML:1.0\n---\n"
+        "m: !!opencv-matrix\n"
+        "   rows: 1\n"
+        "   cols: 1\n"
+        "   dt: \"" + dt + "\"\n"
+        "   data: [ 0 ]\n";
+
+    FileStorage fs(content, FileStorage::READ | FileStorage::MEMORY);
+
+    Mat m;
+    EXPECT_ANY_THROW(fs["m"] >> m);
 }
 
 TEST(Core_InputOutput, filestorage_base64_valid_call)
@@ -1199,7 +1268,7 @@ TEST(Core_InputOutput, FileStorage_DMatch)
 
     EXPECT_NO_THROW(fs << "d" << d);
     cv::String fs_result = fs.releaseAndGetString();
-    EXPECT_STREQ(fs_result.c_str(), "%YAML:1.0\n---\nd: [ 1, 2, 3, -1.5 ]\n");
+    EXPECT_STREQ(fs_result.c_str(), "%YAML 1.2\n---\nd: [ 1, 2, 3, -1.5 ]\n");
 
     cv::FileStorage fs_read(fs_result, cv::FileStorage::READ | cv::FileStorage::MEMORY);
 
@@ -1227,7 +1296,7 @@ TEST(Core_InputOutput, FileStorage_DMatch_vector)
     EXPECT_NO_THROW(fs << "dv" << dv);
     cv::String fs_result = fs.releaseAndGetString();
     EXPECT_STREQ(fs_result.c_str(),
-"%YAML:1.0\n"
+"%YAML 1.2\n"
 "---\n"
 "dv:\n"
 "   - [ 1, 2, 3, -1.5 ]\n"
@@ -1274,7 +1343,7 @@ TEST(Core_InputOutput, FileStorage_DMatch_vector_vector)
     cv::String fs_result = fs.releaseAndGetString();
 #ifndef OPENCV_TRAITS_ENABLE_DEPRECATED
     EXPECT_STREQ(fs_result.c_str(),
-"%YAML:1.0\n"
+"%YAML 1.2\n"
 "---\n"
 "dvv:\n"
 "   -\n"
@@ -1685,6 +1754,53 @@ TEST(Core_InputOutput, FileStorage_json_bool)
     fs.release();
 }
 
+TEST(Core_InputOutput, FileStorage_json_unicode_escape)
+{
+    // Test \uXXXX Unicode escape sequences in JSON strings
+    std::string test = R"({
+        "ascii": "\u0041\u0042\u0043",
+        "copyright": "\u00A9",
+        "chinese": "\u4E2D",
+        "emoji_base": "\u263A",
+        "mixed": "Hello \u4E16\u754C"
+    })";
+    FileStorage fs(test, FileStorage::READ | FileStorage::MEMORY);
+
+    // Test ASCII characters (\u0041=A, \u0042=B, \u0043=C)
+    ASSERT_TRUE(fs["ascii"].isString());
+    ASSERT_EQ((std::string)fs["ascii"], "ABC");
+
+    // Test 2-byte UTF-8 character (\u00A9=©)
+    ASSERT_TRUE(fs["copyright"].isString());
+    std::string copyright_str = (std::string)fs["copyright"];
+    ASSERT_EQ(copyright_str.size(), 2u);  // © is 2 bytes in UTF-8
+    ASSERT_EQ((unsigned char)copyright_str[0], 0xC2);
+    ASSERT_EQ((unsigned char)copyright_str[1], 0xA9);
+
+    // Test 3-byte UTF-8 character (\u4E2D=中)
+    ASSERT_TRUE(fs["chinese"].isString());
+    std::string chinese_str = (std::string)fs["chinese"];
+    ASSERT_EQ(chinese_str.size(), 3u);  // 中 is 3 bytes in UTF-8
+    ASSERT_EQ((unsigned char)chinese_str[0], 0xE4);
+    ASSERT_EQ((unsigned char)chinese_str[1], 0xB8);
+    ASSERT_EQ((unsigned char)chinese_str[2], 0xAD);
+
+    // Test another 3-byte character (\u263A=☺)
+    ASSERT_TRUE(fs["emoji_base"].isString());
+    std::string emoji_str = (std::string)fs["emoji_base"];
+    ASSERT_EQ(emoji_str.size(), 3u);
+    ASSERT_EQ((unsigned char)emoji_str[0], 0xE2);
+    ASSERT_EQ((unsigned char)emoji_str[1], 0x98);
+    ASSERT_EQ((unsigned char)emoji_str[2], 0xBA);
+
+    // Test mixed ASCII and Unicode
+    ASSERT_TRUE(fs["mixed"].isString());
+    std::string mixed = (std::string)fs["mixed"];
+    ASSERT_EQ(mixed.substr(0, 6), "Hello ");  // First 6 chars are "Hello "
+
+    fs.release();
+}
+
 TEST(Core_InputOutput, FileStorage_free_file_after_exception)
 {
     const std::string fileName = cv::tempfile("FileStorage_free_file_after_exception_test.yml");
@@ -1704,6 +1820,21 @@ TEST(Core_InputOutput, FileStorage_free_file_after_exception)
     catch (const std::exception&)
     {
     }
+    ASSERT_EQ(0, std::remove(fileName.c_str()));
+}
+
+TEST(Core_InputOutput, FileStorage_YAML_empty_key)
+{
+    const std::string fileName = cv::tempfile("FileStorage_YAML_empty_key_test.yml");
+    const std::string content = "%YAML:1.0\n---\nkey1: value1\n: 10\n";
+
+    std::fstream testFile;
+    testFile.open(fileName.c_str(), std::fstream::out);
+    if(!testFile.is_open()) FAIL();
+    testFile << content;
+    testFile.close();
+
+    EXPECT_THROW(FileStorage(fileName, FileStorage::READ), cv::Exception);
     ASSERT_EQ(0, std::remove(fileName.c_str()));
 }
 
@@ -1915,7 +2046,6 @@ static void test_20279(FileStorage& fs)
         m32fc1.at<float>((int)i) = v * 0.5f;
     }
     Mat m16fc1;
-    // produces CV_16S output: convertFp16(m32fc1, m16fc1);
     m32fc1.convertTo(m16fc1, CV_16FC1);
     EXPECT_EQ(CV_16FC1, m16fc1.type()) << typeToString(m16fc1.type());
     //std::cout << m16fc1 << std::endl;
@@ -2093,6 +2223,7 @@ TEST(Core_InputOutput, FileStorage_int64_26829)
         "IntMax: 2147483647\n"
         "String4: string4\n"
         "Int64Max: 9223372036854775807\n"
+        "Int64Reg: 2147484671\n"
         "String5: string5\n";
 
     FileStorage fs(content, FileStorage::READ | FileStorage::MEMORY);
@@ -2135,7 +2266,33 @@ TEST(Core_InputOutput, FileStorage_int64_26829)
 
         fs["Int64Max"] >> value;
         EXPECT_EQ(value, INT64_MAX);
+
+        fs["Int64Reg"] >> value;
+        EXPECT_EQ(value, 2147484671); // C++ INT_MAX +1024
     }
+
+    {
+        double value = fs["Int64Reg"].real();
+        EXPECT_EQ(value, 2147484671); // C++ INT_MAX +1024
+    }
+}
+
+TEST(Core_InputOutput, FileStorage_read_bigint_as_real_29363)
+{
+    // An integer above INT_MAX (e.g. from externally-produced json/yaml/xml) must
+    // convert to float/double without truncating to int32. Regression for #29363.
+    String content =
+        "%YAML:1.0\n"
+        "a: 6662329666\n"   // ~6.6e9, exact in double
+        "b: -9876543210\n"
+        "c: 4294967296\n";  // 2^32, exact in double and float
+    FileStorage fs(content, FileStorage::READ | FileStorage::MEMORY);
+
+    EXPECT_EQ(6662329666.0,  (double)fs["a"]);
+    EXPECT_EQ(-9876543210.0, (double)fs["b"]);
+    EXPECT_EQ(4294967296.0,  (double)fs["c"]);
+    EXPECT_EQ(4294967296.0f, (float)fs["c"]);
+    EXPECT_EQ((int64_t)6662329666LL, (int64_t)fs["a"]);  // int64 path unchanged
 }
 
 template <typename T>
@@ -2147,9 +2304,19 @@ T fsWriteRead(const T& expectedValue, const char* ext)
     fs_w.release();
 
     FileStorage fs_r(fname, FileStorage::READ);
-
     T value;
     fs_r["value"] >> value;
+    fs_r.release();
+
+    // If ext is `.gz[0-9]`, fname on storage will end with `.gz`.
+    // FileStorage::Impl::open() truncates the last digit internally.
+    if (isdigit(fname.back()))
+    {
+        fname.pop_back();
+    }
+
+    remove(fname.c_str());
+
     return value;
 }
 
@@ -2203,8 +2370,105 @@ TEST_P(FileStorage_exact_type, long_int_mat)
     EXPECT_EQ(cv::norm(src, dst, NORM_INF), 0.0);
 }
 
+TEST_P(FileStorage_exact_type, fp8_mat)
+{
+    const int fp8[] = { CV_8F_E4M3FN, CV_8F_E4M3FNUZ };
+    float vals[] = { 0.f, 0.5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f, -1.5f, -2.f };
+    Mat f(1, 10, CV_32F, vals);
+    for (int d : fp8)
+    {
+        Mat src; f.convertTo(src, d);
+        Mat dst = fsWriteRead(src, GetParam());
+        ASSERT_EQ(src.type(), dst.type());
+        ASSERT_EQ(src.size, dst.size);
+        EXPECT_EQ(0, memcmp(src.data, dst.data, src.total() * src.elemSize())) << "fp8 depth " << d;
+    }
+}
+
 INSTANTIATE_TEST_CASE_P(Core_InputOutput,
-    FileStorage_exact_type, Values(".yml", ".xml", ".json")
+    FileStorage_exact_type, Values(".yml", ".xml", ".json", ".xml.gz", ".xml.gz0", ".xml.gz9")
 );
+
+TEST(Core_InputOutput, fp8_base64)
+{
+    const int fp8[] = { CV_8F_E4M3FN, CV_8F_E4M3FNUZ };
+    float vals[] = { 0.f, 0.5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f, -1.5f, -2.f };
+    Mat f(1, 10, CV_32F, vals);
+    for (const char* ext : { ".yml", ".xml", ".json" })
+        for (int d : fp8)
+        {
+            Mat src; f.convertTo(src, d);
+            std::string fn = cv::tempfile(ext);
+            { FileStorage fs(fn, FileStorage::WRITE_BASE64); fs << "m" << src; }
+            Mat dst; { FileStorage fs(fn, FileStorage::READ); fs["m"] >> dst; }
+            remove(fn.c_str());
+            ASSERT_EQ(src.type(), dst.type());
+            ASSERT_EQ(src.size, dst.size);
+            EXPECT_EQ(0, memcmp(src.data, dst.data, src.total() * src.elemSize()))
+                << "fp8 depth " << d << " ext " << ext;
+        }
+}
+
+TEST(Core_InputOutput, fp8_scalar)
+{
+    for (const char* ext : { ".yml", ".xml", ".json" })
+    {
+        cv::fp8_t a(2.5f);
+        cv::fp8a_t b(-1.5f);
+        std::string fn = cv::tempfile(ext);
+        { FileStorage fs(fn, FileStorage::WRITE); fs << "a" << a << "b" << b; }
+        cv::fp8_t a2; cv::fp8a_t b2;
+        { FileStorage fs(fn, FileStorage::READ); fs["a"] >> a2; fs["b"] >> b2; }
+        remove(fn.c_str());
+        EXPECT_EQ((float)a, (float)a2) << ext;
+        EXPECT_EQ((float)b, (float)b2) << ext;
+    }
+}
+
+TEST(Core_InputOutput, YAML_Compatibility)
+{
+    string filename = cv::tempfile(".yaml");
+
+    // 1. Write using DEFAULT (should be 1.2 compatible now)
+    {
+        FileStorage fs(filename, FileStorage::WRITE | FileStorage::FORMAT_YAML);
+        ASSERT_TRUE(fs.isOpened());
+        fs << "bool_true" << true;
+        fs << "bool_false" << false;
+        fs.release();
+    }
+
+    // 2. Verify Default is Modern (Literals + No Legacy Header)
+    {
+        std::ifstream file(filename.c_str());
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        std::string content = buffer.str();
+
+        EXPECT_NE(content.find("bool_true: true"), std::string::npos); // Found 'true'
+        EXPECT_EQ(content.find("%YAML:1.0"), std::string::npos);       // No 1.0 Header
+    }
+
+    // 3. Write using LEGACY flag
+    {
+        FileStorage fs(filename, FileStorage::WRITE | FileStorage::FORMAT_YAML_1_0);
+        ASSERT_TRUE(fs.isOpened());
+        fs << "bool_true" << true;
+        fs.release();
+    }
+
+    // 4. Verify Legacy (Integers + Strict Header)
+    {
+        std::ifstream file(filename.c_str());
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        std::string content = buffer.str();
+
+        EXPECT_NE(content.find("bool_true: 1"), std::string::npos);    // Found '1'
+        EXPECT_NE(content.find("%YAML:1.0"), std::string::npos);       // Found 1.0 Header
+    }
+
+    remove(filename.c_str());
+}
 
 }} // namespace

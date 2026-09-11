@@ -1,4 +1,4 @@
-/***********************************************************************
+/*M*********************************************************************
  * Software License Agreement (BSD License)
  *
  * Copyright 2008-2009  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
@@ -38,6 +38,7 @@
 //! @cond IGNORED
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <iomanip>
 #include <limits.h>
@@ -52,7 +53,6 @@
 #else
 #include <map>
 #endif
-#include <math.h>
 #include <stddef.h>
 
 #include "dynamic_bitset.h"
@@ -205,7 +205,7 @@ public:
     void add(Matrix<ElementType> dataset)
     {
 #if USE_UNORDERED_MAP
-        buckets_space_.rehash((buckets_space_.size() + dataset.rows) * 1.2);
+        buckets_space_.rehash(std::llround((buckets_space_.size() + dataset.rows) * 1.2));
 #endif
         // Add the features to the table
         for (unsigned int i = 0; i < dataset.rows; ++i) add(i, dataset[i]);
@@ -490,7 +490,7 @@ inline LshStats LshTable<unsigned char>::getStats() const
          != end; )
         if (*iterator < bin_end) {
             if (is_new_bin) {
-                stats.size_histogram_.push_back(std::vector<unsigned int>(3, 0));
+                stats.size_histogram_.emplace_back(3, 0);
                 stats.size_histogram_.back()[0] = bin_start;
                 stats.size_histogram_.back()[1] = bin_end - 1;
                 is_new_bin = false;

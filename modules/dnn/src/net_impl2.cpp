@@ -6,17 +6,268 @@
 
 #include "net_impl.hpp"
 
+#include <limits>
+
+#ifdef HAVE_CUDA
+#include <opencv2/core/cuda_stream_accessor.hpp>
+#endif
+
+#ifdef HAVE_ONNXRUNTIME
+#include <onnxruntime_cxx_api.h>
+#endif
+
 namespace cv {
 namespace dnn {
 CV__DNN_INLINE_NS_BEGIN
+
+#ifdef HAVE_ONNXRUNTIME
+struct OrtNamesCache
+{
+    std::vector<std::string> input_names;
+    std::vector<std::string> output_names;
+    std::unordered_map<std::string, int> input_name_to_index;
+    std::unordered_map<std::string, int> output_name_to_index;
+
+    explicit OrtNamesCache(Ort::Session& session)
+    {
+        Ort::AllocatorWithDefaultOptions allocator;
+
+        const size_t ninputs = session.GetInputCount();
+        input_names.reserve(ninputs);
+        for (size_t i = 0; i < ninputs; ++i)
+        {
+            Ort::AllocatedStringPtr in = session.GetInputNameAllocated(i, allocator);
+            std::string n = in ? std::string(in.get()) : std::string();
+            input_name_to_index[n] = (int)i;
+            input_names.push_back(std::move(n));
+        }
+
+        const size_t noutputs = session.GetOutputCount();
+        output_names.reserve(noutputs);
+        for (size_t i = 0; i < noutputs; ++i)
+        {
+            Ort::AllocatedStringPtr out = session.GetOutputNameAllocated(i, allocator);
+            std::string n = out ? std::string(out.get()) : std::string();
+            output_name_to_index[n] = (int)i;
+            output_names.push_back(std::move(n));
+        }
+    }
+};
+#endif
+
+#ifdef HAVE_ONNXRUNTIME
+void Net::Impl::applyStagedOrtInputs()
+{
+    if (!ort_session || ort_staged_inputs.empty())
+        return;
+
+    if (!ort_names_cache)
+        ort_names_cache = std::make_shared<OrtNamesCache>(*ort_session);
+
+    OrtNamesCache& names = *ort_names_cache;
+    const size_t ninputs = names.input_names.size();
+    if (ninputs == 0)
+        CV_Error(Error::StsError, "DNN/ORT: ORT session has no inputs");
+
+    if (!netInputLayer)
+    {
+        netInputLayer = Ptr<DataLayer>(new DataLayer());
+        netInputLayer->name = "ort_data_layer";
+        netInputLayer->type = "Data";
+    }
+    if (netInputLayer->blobs.size() != ninputs)
+        netInputLayer->blobs.resize(ninputs);
+
+    for (size_t k = 0; k < ort_staged_inputs.size(); ++k)
+    {
+        const std::string& inpname = ort_staged_inputs[k].first;
+        const Mat& inputMat = ort_staged_inputs[k].second;
+        if (inputMat.empty())
+            CV_Error(Error::StsBadArg, "DNN/ORT: Input blob is empty");
+
+        size_t inputIdx = 0;
+        if (inpname.empty())
+        {
+            if (ninputs != 1)
+                CV_Error(Error::StsBadArg, "DNN/ORT: input name must be specified for models with multiple inputs");
+            inputIdx = 0;
+        }
+        else
+        {
+            auto it = names.input_name_to_index.find(inpname);
+            if (it == names.input_name_to_index.end())
+                CV_Error_(Error::StsObjectNotFound, ("DNN/ORT: input '%s' is not found", inpname.c_str()));
+            inputIdx = (size_t)it->second;
+        }
+        inputMat.copyTo(netInputLayer->blobs[inputIdx]);
+    }
+    ort_staged_inputs.clear();
+}
+
+static int cvTypeFromONNXElemType(const ONNXTensorElementDataType t)
+{
+    switch (t)
+    {
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:   return CV_32F;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:   return CV_8U;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:    return CV_8S;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:  return CV_16U;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:   return CV_16S;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:   return CV_32S;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:   return CV_64S;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:    return CV_8U;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:  return CV_64F;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: return CV_16F;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16:return CV_16BF;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32:  return CV_32U;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64:  return CV_64U;
+    default:
+        return -1;
+    }
+}
+
+static Ort::Value createOrtTensorFromMat(Ort::Session& session,
+                                        size_t inputIdx,
+                                        const Ort::MemoryInfo& memory_info,
+                                        Mat& inputBlob,
+                                        std::vector<int64_t>& inputDims,
+                                        ONNXTensorElementDataType& in_elem_type)
+{
+    Ort::TypeInfo in_type_info = session.GetInputTypeInfo(inputIdx);
+    Ort::ConstTensorTypeAndShapeInfo in_tensor_info = in_type_info.GetTensorTypeAndShapeInfo();
+    in_elem_type = in_tensor_info.GetElementType();
+
+    const int cvInType = cvTypeFromONNXElemType(in_elem_type);
+    if (cvInType < 0)
+        CV_Error_(Error::StsNotImplemented, ("DNN/ORT: unsupported ORT input element type: %d", (int)in_elem_type));
+
+    if (inputBlob.type() != cvInType)
+        inputBlob.convertTo(inputBlob, cvInType);
+
+    if (!inputBlob.isContinuous())
+        inputBlob = inputBlob.clone();
+
+    inputDims.clear();
+    inputDims.reserve((size_t)inputBlob.dims);
+    for (int i = 0; i < inputBlob.dims; i++)
+        inputDims.push_back((int64_t)inputBlob.size[i]);
+
+    const size_t nbytes = (size_t)inputBlob.total() * inputBlob.elemSize();
+    OrtValue* input_tensor_raw = nullptr;
+    Ort::ThrowOnError(Ort::GetApi().CreateTensorWithDataAsOrtValue(
+        memory_info,
+        inputBlob.data,
+        nbytes,
+        inputDims.data(),
+        inputDims.size(),
+        in_elem_type,
+        &input_tensor_raw));
+    return Ort::Value(input_tensor_raw);
+}
+
+std::vector<Mat> Net::Impl::runOrtSession(std::vector<Mat> inputBlobs, const std::vector<int>& outIdxs)
+{
+    CV_Assert(this->ort_session);
+    Ort::Session& session = *this->ort_session;
+
+    if (!this->ort_names_cache)
+        this->ort_names_cache = std::make_shared<OrtNamesCache>(session);
+
+    OrtNamesCache& names = *this->ort_names_cache;
+    if (names.input_names.empty())
+        CV_Error(Error::StsError, "DNN/ORT: ORT session has no inputs");
+    if (names.output_names.empty())
+        CV_Error(Error::StsError, "DNN/ORT: ORT session has no outputs");
+
+    const size_t ninputs = names.input_names.size();
+    if (inputBlobs.size() != ninputs)
+        CV_Error_(Error::StsBadArg, ("DNN/ORT: expected %zu inputs, but got %zu", ninputs, inputBlobs.size()));
+
+    std::vector<const char*> in_names;
+    in_names.reserve(ninputs);
+    for (size_t i = 0; i < ninputs; ++i)
+        in_names.push_back(names.input_names[i].c_str());
+
+    std::vector<const char*> out_names;
+    if (outIdxs.empty())
+    {
+        out_names.reserve(names.output_names.size());
+        for (const std::string& n : names.output_names)
+            out_names.push_back(n.c_str());
+    }
+    else
+    {
+        out_names.reserve(outIdxs.size());
+        for (int idx : outIdxs)
+        {
+            CV_CheckGE(idx, 0, "DNN/ORT: output index must be non-negative");
+            CV_CheckLT((size_t)idx, names.output_names.size(), "DNN/ORT: output index is out of range");
+            out_names.push_back(names.output_names[(size_t)idx].c_str());
+        }
+    }
+
+    static const Ort::MemoryInfo memory_info =
+        Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+
+    std::vector<Ort::Value> input_tensors;
+    input_tensors.reserve(ninputs);
+    for (size_t i = 0; i < ninputs; ++i)
+    {
+        if (inputBlobs[i].empty())
+            CV_Error_(Error::StsError, ("DNN/ORT: input '%s' is empty", names.input_names[i].c_str()));
+
+        std::vector<int64_t> inputDims;
+        ONNXTensorElementDataType in_elem_type = ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+        input_tensors.push_back(createOrtTensorFromMat(session, i, memory_info, inputBlobs[i], inputDims, in_elem_type));
+    }
+
+    std::vector<Ort::Value> output_tensors = session.Run(
+        Ort::RunOptions{nullptr},
+        in_names.data(), input_tensors.data(), input_tensors.size(),
+        out_names.data(), out_names.size());
+    if (profilingMode != DNN_PROFILE_NONE) ort_profile_runs++;
+
+    CV_CheckEQ(output_tensors.size(), out_names.size(), "DNN/ORT: ORT returned unexpected number of outputs");
+
+    std::vector<Mat> results;
+    results.reserve(output_tensors.size());
+
+    for (Ort::Value& outv : output_tensors)
+    {
+        Ort::TensorTypeAndShapeInfo shape_info = outv.GetTensorTypeAndShapeInfo();
+        std::vector<int64_t> out_shape = shape_info.GetShape();
+
+        std::vector<int> out_dims;
+        out_dims.reserve(out_shape.size());
+        for (int64_t d : out_shape)
+        {
+            if (d < 0)
+                CV_Error(Error::StsError, "DNN/ORT: dynamic output shapes are not supported at runtime");
+            if (d > (int64_t)std::numeric_limits<int>::max())
+                CV_Error(Error::StsError, "DNN/ORT: output shape dimension is too large");
+            out_dims.push_back((int)d);
+        }
+
+        const ONNXTensorElementDataType out_elem_type = shape_info.GetElementType();
+        const int cvOutType = cvTypeFromONNXElemType(out_elem_type);
+        if (cvOutType < 0)
+            CV_Error_(Error::StsNotImplemented, ("DNN/ORT: unsupported ORT output element type: %d", (int)out_elem_type));
+
+        uint8_t* out_bytes = outv.GetTensorMutableData<uint8_t>();
+        Mat view(out_dims, cvOutType, out_bytes);
+        results.push_back(view.clone());  // detach from ORT-owned memory
+    }
+
+    return results;
+}
+#endif
 
 std::string modelFormatToString(ModelFormat modelFormat)
 {
     return
         modelFormat == DNN_MODEL_ONNX ? "ONNX" :
         modelFormat == DNN_MODEL_TF ? "TF" :
-        modelFormat == DNN_MODEL_TFLITE ? "TFLite" :
-        modelFormat == DNN_MODEL_CAFFE ? "Caffe" : "Unknown/Generic";
+        modelFormat == DNN_MODEL_TFLITE ? "TFLite" : "Unknown/Generic";
 }
 
 std::string argKindToString(ArgKind kind)
@@ -69,30 +320,30 @@ public:
         return g;
     }*/
 
-    virtual const std::vector<Arg>& append(Ptr<Layer>& layer,
+    virtual const std::vector<Arg>& append(Ptr<LayerInfo>& op,
                 const std::vector<std::string>& outnames) override
     {
-        CV_Assert(layer);
+        CV_Assert(op);
         int i, noutputs = (int)outnames.size();
-        //CV_Assert(layer->minNumOutputs() <= noutputs && noutputs <= layer->maxNumOutputs());
+        //CV_Assert(op->minNumOutputs() <= noutputs && noutputs <= op->maxNumOutputs());
 
-        layer->outputs.resize(noutputs);
+        op->outputs.resize(noutputs);
         for (i = 0; i < noutputs; i++) {
             Arg outarg = netimpl_->getArg(outnames[i]);
             ArgKind kind = netimpl_->argKind(outarg);
             CV_Assert(kind == DNN_ARG_TEMP || kind == DNN_ARG_OUTPUT);
-            layer->outputs[i] = outarg;
+            op->outputs[i] = outarg;
         }
 
-        prog_.push_back(layer);
-        return layer->outputs;
+        prog_.push_back(op);
+        return op->outputs;
     }
 
-    virtual Arg append(Ptr<Layer>& layer,
+    virtual Arg append(Ptr<LayerInfo>& op,
                const std::string& outname) override
     {
         std::vector<std::string> outnames = {outname};
-        const std::vector<Arg>& outputs = append(layer, outnames);
+        const std::vector<Arg>& outputs = append(op, outnames);
         CV_Assert(outputs.size() == 1);
         return outputs[0];
     }
@@ -126,13 +377,13 @@ public:
         prindent(strm, subindent);
         strm << "],\n";
         prindent(strm, subindent);
-        strm << "nodes: [\n";
+        strm << "layers: [\n";
         size_t nlayers = prog_.size();
         for (size_t i = 0; i < nlayers; i++) {
             prindent(strm, argindent);
             strm << "// op #" << i << "\n";
-            const Ptr<Layer>& layer = prog_[i];
-            layer->dump(strm, argindent, i+1 < nlayers);
+            const Ptr<LayerInfo>& op = prog_[i];
+            op->dump(strm, argindent, i+1 < nlayers);
         }
         prindent(strm, subindent);
         strm << "]\n";
@@ -153,15 +404,30 @@ public:
         netimpl_->checkArgs(outputs);
         outputs_ = outputs;
     }
-    virtual const std::vector<Ptr<Layer> >& prog() const override { return prog_; }
-    virtual void setProg(const std::vector<Ptr<Layer> >& newprog) override { prog_ = newprog; }
+    virtual const std::vector<Ptr<LayerInfo> >& prog() const override { return prog_; }
+    virtual int opBackend(int opidx) const override
+    {
+        return (opidx >= 0 && opidx < (int)execBackend_.size()) ? execBackend_[opidx]
+                                                                : DNN_BACKEND_OPENCV;
+    }
+    virtual void setProg(const std::vector<Ptr<LayerInfo> >& newprog) override
+    {
+        prog_ = newprog;
+        exec_.clear();
+        execBackend_.clear();
+        inH2D_.clear();
+        outD2H_.clear();
+    }
 
-protected:
     Net::Impl* netimpl_;
     std::string name_;
     std::vector<Arg> inputs_;
     std::vector<Arg> outputs_;
-    std::vector<Ptr<Layer> > prog_;
+    std::vector<Ptr<LayerInfo> > prog_;
+    std::vector<Ptr<Layer> > exec_;
+    std::vector<int> execBackend_;
+    std::vector<std::vector<uchar> > inH2D_;
+    std::vector<std::vector<uchar> > outD2H_;
 };
 
 Ptr<Graph> Graph::create(void* netimpl, const std::string& name,
@@ -286,25 +552,224 @@ Ptr<Graph> Net::Impl::newGraph(const std::string& name_, const std::vector<Arg>&
     return graph;
 }
 
-void Net::Impl::prepareForInference()
+// No half kernels yet, so half constants are widened just as setGraphInput() widens inputs.
+void Net::Impl::widenHalfConstants()
 {
-    if (!prepared) {
-        constFold();
-        //inferTypes();
-        //constArgs();
-        //inferShapes(true);
-        //fuse();
-        //useBlockLayout();
-        //inferShapes(true);
-        assignBuffers();
-        totalLayers = updateGraphOfs(mainGraph, 0, true);
-        prepared = true;
-        finalizeLayers = true;
+    if (enableFP16)
+        return;
+    size_t nargs = args.size();
+    __tensors__.resize(nargs);
+    for (size_t i = 1; i < nargs; i++) {
+        ArgData& adata = args[i];
+        if (adata.kind != DNN_ARG_CONST ||
+            (adata.type != CV_16F && adata.type != CV_16BF))
+            continue;
+        Mat& t = __tensors__[i];
+        if (!t.empty()) {
+            Mat widened;
+            widened.fit(t.shape(), accuracy);
+            t.convertTo(widened, accuracy);
+            t = widened;
+        }
+        adata.type = accuracy;
     }
 }
 
+void Net::Impl::prepareForInference()
+{
+#ifdef HAVE_ONNXRUNTIME
+    if (this->ort_session)
+    {
+        prepared = true;
+        return;
+    }
+#endif
+
+    if (!prepared) {
+        widenHalfConstants();
+        fuseQDQ();
+        constFold();
+        fuseBN();
+        constArgs();
+        fuseAttention();
+        fuseMatMulConstBToGemm();
+        fuseSharedInputGemm();
+        fuseReshapeTranspose();
+        fuseTransposeMatMul();
+        fuseScaleSoftmax();
+        fuseBasic();
+        totalLayers = updateGraphOfs(mainGraph, 0, true);
+        prepared = true;
+    }
+}
+
+void Net::Impl::finalizeGraph(const Ptr<Graph>& graph, bool useCUDA)
+{
+    GraphImpl* g = static_cast<GraphImpl*>(graph.get());
+    const std::vector<Ptr<LayerInfo> >& prog = g->prog_;
+    size_t i, nops = prog.size();
+    g->exec_.assign(nops, Ptr<Layer>());
+    g->execBackend_.assign(nops, DNN_BACKEND_OPENCV);
+
+#ifdef HAVE_CUDA
+    // Whole-graph CUDA gate: run on CUDA only if *every* op has a CUDA executor; if any op is
+    // unsupported (or the graph has control-flow subgraphs) run the entire graph on CPU. This
+    // avoids partial CPU<->CUDA execution and its host/device coherence hazards for now.
+    std::vector<Ptr<Layer> > cudaExecs;
+    bool graphOnCuda = false;
+    if (useCUDA && cudaInfo) {
+        graphOnCuda = true;
+        cudaExecs.assign(nops, Ptr<Layer>());
+        for (i = 0; i < nops; i++) {
+            const Ptr<LayerInfo>& op = prog[i];
+            if (!op)
+                continue;
+            if (op->subgraphs()) { graphOnCuda = false; break; }  // control-flow bodies stay on CPU
+            Ptr<Layer> e = LayerFactory::createExec(op->type, DNN_BACKEND_CUDA, op, &cudaInfo->context);
+            if (!e) { graphOnCuda = false; break; }
+            cudaExecs[i] = e;
+        }
+        if (!graphOnCuda) {
+            cudaExecs.clear();
+            CV_LOG_INFO(NULL, cv::format("DNN/NewEngine: graph '%s' has layer(s) without CUDA support; "
+                                         "running the whole graph on CPU", graph->name().c_str()));
+        }
+    }
+#endif
+
+    for (i = 0; i < nops; i++) {
+        const Ptr<LayerInfo>& op = prog[i];
+        if (!op)
+            continue;
+
+        // recurse into subgraphs (If/Loop bodies) first
+        const std::vector<Ptr<Graph> >* subs = op->subgraphs();
+        if (subs) {
+            for (const Ptr<Graph>& sub : *subs)
+                finalizeGraph(sub, useCUDA);
+        }
+
+        Ptr<Layer> exec;
+        int backend = DNN_BACKEND_OPENCV;
+#ifdef HAVE_CUDA
+        if (graphOnCuda && cudaExecs[i]) {
+            exec = cudaExecs[i];
+            exec->preferableTarget = preferableTarget;
+            backend = DNN_BACKEND_CUDA;
+        }
+#endif
+        if (!exec) {
+            exec = LayerFactory::createExec(op->type, DNN_BACKEND_OPENCV, op, nullptr);
+            if (!exec)
+                exec = op.dynamicCast<Layer>();
+            backend = DNN_BACKEND_OPENCV;
+        }
+        CV_Assert(exec);
+        // Re-finalize can hand back the same object, so reset state for the new backend.
+        exec->packedWeightEpoch = 0;
+        exec->finalizedOnce = false;
+        exec->lastInpShapes.clear();
+        exec->lastInpTypes.clear();
+        g->exec_[i] = exec;
+        g->execBackend_[i] = backend;
+        CV_LOG_INFO(NULL, cv::format("DNN/NewEngine: finalize op #%zu '%s' (%s) -> %s",
+                    i, op->name.c_str(), op->type.c_str(),
+                    backend == DNN_BACKEND_CUDA ? "CUDA" : "CPU"));
+    }
+}
+
+void Net::Impl::saveFusedSnapshot()
+{
+    fusedSnapshot.clear();
+    for (const Ptr<Graph>& g : allgraphs) {
+        FusedGraphSnapshot snap;
+        snap.graph = g;
+        const std::vector<Ptr<LayerInfo> >& prog = g->prog();
+        snap.prog = prog;
+        snap.inputs.reserve(prog.size());
+        snap.outputs.reserve(prog.size());
+        for (const Ptr<LayerInfo>& op : prog) {
+            snap.inputs.push_back(op ? op->inputs : std::vector<Arg>());
+            snap.outputs.push_back(op ? op->outputs : std::vector<Arg>());
+        }
+        fusedSnapshot.push_back(std::move(snap));
+    }
+}
+
+void Net::Impl::restoreFusedSnapshot()
+{
+    // Roll the graph back to its post-fusion state: undo the layer-input rewiring
+    // and remove the TransformLayout ops inserted by a previous useBlockLayout().
+    for (const FusedGraphSnapshot& snap : fusedSnapshot) {
+        for (size_t i = 0; i < snap.prog.size(); i++) {
+            const Ptr<LayerInfo>& op = snap.prog[i];
+            if (!op)
+                continue;
+            op->inputs = snap.inputs[i];
+            op->outputs = snap.outputs[i];
+        }
+        snap.graph->setProg(snap.prog);
+    }
+    totalLayers = updateGraphOfs(mainGraph, 0, true);
+}
+
+void Net::Impl::finalize()
+{
+#ifdef HAVE_ONNXRUNTIME
+    if (ort_session)
+        return;  // ONNX Runtime manages its own execution session
+#endif
+    if (!mainGraph)
+        return;
+    if (!prepared)
+        prepareForInference();
+    if (finalized)
+        return;
+
+    // Snapshot the fused graph once so finalize() can re-run cleanly on a
+    // backend/target change (block layout + buffer assignment are destructive).
+    if (!fusedSnapshotValid) {
+        saveFusedSnapshot();
+        fusedSnapshotValid = true;
+    } else {
+        restoreFusedSnapshot();
+    }
+
+    bool useCUDA = false;
+#ifdef HAVE_CUDA
+    cudaArgBuffers.clear();
+    cudaArgHostDirty.clear();
+    cudaArgDeviceDirty.clear();
+    if (preferableBackend == DNN_BACKEND_CUDA && haveCUDA()) {
+        useCUDA = true;
+        if (!cudaInfo) {
+            cuda4dnn::csl::CSLContext context;
+            context.stream = cuda4dnn::csl::Stream(true);
+            context.cublas_handle = cuda4dnn::csl::cublas::Handle(context.stream);
+            context.cudnn_handle = cuda4dnn::csl::cudnn::Handle(context.stream);
+            auto d2h_stream = cuda4dnn::csl::Stream(true);
+            cudaInfo = std::unique_ptr<CudaInfo_t>(new CudaInfo_t(std::move(context), std::move(d2h_stream)));
+        }
+    }
+#endif
+
+    CV_LOG_INFO(NULL, cv::format("DNN/NewEngine: finalize() backend=%d target=%d useCUDA=%d over %zu graph(s)",
+                preferableBackend, preferableTarget, (int)useCUDA, allgraphs.size()));
+
+    for (const Ptr<Graph>& g : allgraphs)
+        finalizeGraph(g, useCUDA);
+    useBlockLayout();
+    assignBuffers();
+    totalLayers = updateGraphOfs(mainGraph, 0, true);
+
+    for (const Ptr<Graph>& g : allgraphs)
+        finalizeGraph(g, useCUDA);
+
+    finalized = true;
+}
+
 void Net::Impl::allocateLayerOutputs(
-                          const Ptr<Layer>& layer,
+                          const Ptr<LayerInfo>& layer,
                           const std::vector<int>& inpTypes,
                           const std::vector<MatShape>& inpShapes,
                           std::vector<int>& outTypes,
@@ -336,6 +801,9 @@ void Net::Impl::allocateLayerOutputs(
     CV_Assert(tempShapes.size() == tempTypes.size());
     CV_Assert(outShapes.size() == outTypes.size());
     CV_Assert(outShapes.size() == noutputs);
+
+    for (int i = 0; i < (int)tempShapes.size(); i++)
+        CV_CheckGT(total(tempShapes[i]), (size_t)0, "");
     outputs.assign(noutputs, Mat());
     outOrigData.resize(noutputs);
     for (size_t i = 0; i < noutputs; i++) {
@@ -364,9 +832,48 @@ void Net::Impl::allocateLayerOutputs(
 
 void Net::Impl::forwardMainGraph(InputArrayOfArrays inputs, OutputArrayOfArrays outputs)
 {
+#ifdef HAVE_ONNXRUNTIME
+    if (useOrtEngine && mainGraph && modelFormat == DNN_MODEL_ONNX && !modelFileName.empty())
+        finalizeOrt();
+    if (this->ort_session)
+    {
+        if (!netInputLayer || netInputLayer->blobs.empty())
+            CV_Error(Error::StsError, "DNN/ORT: No input data found");
+
+        std::vector<Mat> ortOuts = runOrtSession(netInputLayer->blobs, std::vector<int>());
+
+        std::vector<Mat>* outMats = nullptr;
+        std::vector<UMat>* outUMats = nullptr;
+        _InputArray::KindFlag outKind = outputs.kind();
+        if (outKind == _InputArray::STD_VECTOR_MAT)
+        {
+            outMats = &outputs.getMatVecRef();
+            *outMats = ortOuts;
+        }
+        else if (outKind == _InputArray::STD_VECTOR_UMAT)
+        {
+            outUMats = &outputs.getUMatVecRef();
+            outUMats->resize(ortOuts.size());
+            for (size_t i = 0; i < ortOuts.size(); ++i)
+                ortOuts[i].copyTo(outUMats->at(i));
+        }
+        else if (outKind == _InputArray::MAT || outKind == _InputArray::UMAT)
+        {
+            CV_CheckEQ((int)ortOuts.size(), 1, "DNN/ORT: single Mat/UMat output requires exactly one ORT output");
+            ortOuts[0].copyTo(outputs);
+        }
+        else
+        {
+            CV_Error(Error::StsBadArg, "DNN/ORT: outputs must be Mat, UMat, a vector of Mat's or a vector of UMat's");
+        }
+        return;
+    }
+
+#endif
     if (!mainGraph) {
         CV_Error(Error::StsNullPtr, "the model was not loaded");
     }
+    finalize();  // select per-op executors for the chosen backend/target (idempotent)
     // ************ uncomment one of the lines below for debugging **********
     //tracingMode = DNN_TRACE_OP;
     //tracingMode = DNN_TRACE_ALL;
@@ -377,75 +884,226 @@ void Net::Impl::forwardMainGraph(InputArrayOfArrays inputs, OutputArrayOfArrays 
 
     forwardGraph(mainGraph, inputs, outputs, true);
 
-    // reset finalizeLayer so that layers are only initialized once.
-    // [TODO] if a target or backend change or there are some other important
-    // global changes in configuration, finalizeLayers should be set to 'true' again
-    finalizeLayers = false;
+    // Feed present.* outputs back as past_key_values.* inputs for the next step (causal-lm-with-past).
+    if (useKVCache && kvCacheManager.hasRoutes)
+        kvCacheManager.applyRoutes();
 }
 
-Mat Net::Impl::forwardWithSingleOutput(const std::string& outname)
+// Assign a single result to an output array, including a (pre-allocated) vector
+// of Mat/UMat, which _OutputArray::assign(Mat) does not handle.
+static void assignSingleOutput(OutputArrayOfArrays outputBlobs, const Mat& result)
 {
-    if (!mainGraph) {
-        CV_Error(Error::StsNullPtr, "the model was not loaded");
+    _InputArray::KindFlag k = outputBlobs.kind();
+    if (k == _InputArray::STD_VECTOR_MAT) {
+        std::vector<Mat>& v = outputBlobs.getMatVecRef();
+        v.resize(1);
+        result.copyTo(v[0]);
+    } else if (k == _InputArray::STD_VECTOR_UMAT) {
+        std::vector<UMat>& v = outputBlobs.getUMatVecRef();
+        v.resize(1);
+        result.copyTo(v[0]);
+    } else {
+        outputBlobs.assign(result);
     }
-    const std::vector<Arg>& outargs = mainGraph->outputs();
-    CV_Assert(outargs.size() > 0);
-    if (!outname.empty()) {
-        const ArgData& outdata = args.at(outargs[0].idx);
-        CV_Assert(outdata.name == outname);
+}
+
+void Net::Impl::forwardWithSingleOutput(const std::string& outname, OutputArrayOfArrays outputBlobs)
+{
+#ifdef HAVE_ONNXRUNTIME
+    if (useOrtEngine && mainGraph && modelFormat == DNN_MODEL_ONNX && !modelFileName.empty())
+        finalizeOrt();
+    if (this->ort_session)
+    {
+        if (!netInputLayer || netInputLayer->blobs.empty())
+            CV_Error(Error::StsError, "DNN/ORT: No input data found");
+
+        if (!this->ort_names_cache)
+            this->ort_names_cache = std::make_shared<OrtNamesCache>(*this->ort_session);
+
+        int outIdx = 0;
+        if (!outname.empty())
+        {
+            OrtNamesCache& names = *this->ort_names_cache;
+            auto it = names.output_name_to_index.find(outname);
+            if (it == names.output_name_to_index.end())
+                CV_Error_(Error::StsObjectNotFound, ("DNN/ORT: output '%s' is not found", outname.c_str()));
+            outIdx = it->second;
+        }
+
+        std::vector<int> outIdxs(1, outIdx);
+        std::vector<Mat> outs = runOrtSession(netInputLayer->blobs, outIdxs);
+        CV_Assert(outs.size() == 1);
+        assignSingleOutput(outputBlobs, outs[0]);
+        return;
     }
-    std::vector<Mat> inps={}, outs;
+#endif
+    {
+        if (!mainGraph) {
+            CV_Error(Error::StsNullPtr, "the model was not loaded");
+        }
+        if (!outname.empty()) {
+            auto it = argnames.find(outname);
+            if (it == argnames.end()) {
+                size_t excl = outname.rfind('!');
+                if (excl != std::string::npos) {
+                    it = argnames.find(outname.substr(excl + 1));
+                }
+            }
+            if (it == argnames.end())
+                CV_Error_(Error::StsObjectNotFound,
+                          ("DNN: tensor '%s' is not found in the graph", outname.c_str()));
+
+            Arg targetArg((int)it->second);
+
+            std::vector<Mat> inps, outs;
+            forwardMainGraph(inps, outs);
+
+            const std::vector<Arg>& gr_outputs = mainGraph->outputs();
+            for (size_t i = 0; i < gr_outputs.size(); i++) {
+                if (gr_outputs[i].idx == targetArg.idx) {
+                    assignSingleOutput(outputBlobs, outs[i]);
+                    return;
+                }
+            }
+
+            const ArgData& adata = args.at(targetArg.idx);
+            Mat result;
+            if (adata.kind == DNN_ARG_TEMP) {
+                int bufidx = bufidxs.at(targetArg.idx);
+                CV_Assert(bufidx >= 0 && bufidx < (int)buffers.size());
+                result = buffers[bufidx];
+            } else {
+                result = __tensors__.at(targetArg.idx);
+            }
+            if (result.shape().layout == DATA_LAYOUT_BLOCK) {
+                Mat converted;
+                transformLayout(result, converted, originalLayout, originalLayout, defaultC0);
+                assignSingleOutput(outputBlobs, converted);
+            } else {
+                assignSingleOutput(outputBlobs, result.clone());
+            }
+            return;
+        }
+    }
+
+    std::vector<Mat> inps, outs;
     forwardMainGraph(inps, outs);
-    return outs[0];
+    CV_Assert(!outs.empty());
+    assignSingleOutput(outputBlobs, outs[0]);
 }
 
 void Net::Impl::forwardWithMultipleOutputs(OutputArrayOfArrays outblobs, const std::vector<std::string>& outnames)
 {
+#ifdef HAVE_ONNXRUNTIME
+    if (useOrtEngine && mainGraph && modelFormat == DNN_MODEL_ONNX && !modelFileName.empty())
+        finalizeOrt();
+    if (this->ort_session)
+    {
+        if (!netInputLayer || netInputLayer->blobs.empty())
+            CV_Error(Error::StsError, "DNN/ORT: No input data found");
+
+        if (!this->ort_names_cache)
+            this->ort_names_cache = std::make_shared<OrtNamesCache>(*this->ort_session);
+
+        OrtNamesCache& names = *this->ort_names_cache;
+        const int totalOutputs = (int)names.output_names.size();
+        if (totalOutputs <= 0)
+            CV_Error(Error::StsError, "DNN/ORT: ORT session has no outputs");
+
+        std::vector<int> outIdxs;
+        if (outnames.empty())
+        {
+            outIdxs.resize((size_t)totalOutputs);
+            for (int i = 0; i < totalOutputs; ++i)
+                outIdxs[(size_t)i] = i;
+        }
+        else
+        {
+            outIdxs.reserve(outnames.size());
+            for (const std::string& n : outnames)
+            {
+                auto it = names.output_name_to_index.find(n);
+                if (it == names.output_name_to_index.end())
+                    CV_Error_(Error::StsObjectNotFound, ("DNN/ORT: output '%s' is not found", n.c_str()));
+                outIdxs.push_back(it->second);
+            }
+        }
+
+        std::vector<Mat> outs = runOrtSession(netInputLayer->blobs, outIdxs);
+
+        std::vector<Mat>* outMats = nullptr;
+        std::vector<UMat>* outUMats = nullptr;
+        _InputArray::KindFlag outKind = outblobs.kind();
+        if (outKind == _InputArray::STD_VECTOR_MAT) {
+            outMats = &outblobs.getMatVecRef();
+            outMats->resize(outs.size());
+        } else if (outKind == _InputArray::STD_VECTOR_UMAT) {
+            outUMats = &outblobs.getUMatVecRef();
+            outUMats->resize(outs.size());
+        } else if (outKind == _InputArray::MAT || outKind == _InputArray::UMAT) {
+            CV_CheckEQ((int)outs.size(), 1, "DNN/ORT: Mat/UMat output requires exactly one output");
+        } else {
+            CV_Error(Error::StsBadArg, "outputs must be Mat, UMat, a vector of Mat's or a vector of UMat's");
+        }
+
+        for (size_t i = 0; i < outs.size(); ++i) {
+            Mat src = outs[i];
+            if (outMats) {
+                src.copyTo(outMats->at(i));
+            } else if (outUMats) {
+                src.copyTo(outUMats->at(i));
+            } else {
+                src.copyTo(outblobs);
+            }
+        }
+        return;
+    }
+#endif
+
     if (!mainGraph) {
         CV_Error(Error::StsNullPtr, "the model was not loaded");
     }
     const std::vector<Arg>& outargs = mainGraph->outputs();
     std::vector<int> outidxs;
     int i, j, noutputs = (int)outargs.size();
-    if (!outnames.empty()) {
-        CV_CheckEQ((int)outnames.size(), noutputs, "the number of requested and actual outputs must be the same");
-        if (noutputs == 1 && outnames[0].empty())
-            ;
-        else {
-            for (i = 0; i < noutputs; i++) {
-                const std::string& outname = outnames[i];
-                for (j = 0; j < noutputs; j++) {
-                    const ArgData& adata = args.at(outargs[j].idx);
-                    if (adata.name == outname) {
-                        outidxs.push_back((int)j);
-                        break;
-                    }
+    if (outnames.empty() || (noutputs == 1 && outnames.size() == 1 && outnames[0].empty())) {
+        for (i = 0; i < noutputs; i++)
+            outidxs.push_back(i);
+    } else {
+        for (i = 0; i < (int)outnames.size(); i++) {
+            const std::string& outname = outnames[i];
+            for (j = 0; j < noutputs; j++) {
+                const ArgData& adata = args.at(outargs[j].idx);
+                if (adata.name == outname) {
+                    outidxs.push_back((int)j);
+                    break;
                 }
-                if (j == noutputs) {
-                    CV_Error_(Error::StsObjectNotFound, ("the required output '%s' is not found", outname.c_str()));
-                }
+            }
+            if (j == noutputs) {
+                CV_Error_(Error::StsObjectNotFound, ("the required output '%s' is not found", outname.c_str()));
             }
         }
     }
     std::vector<Mat> inps={}, outs;
     forwardMainGraph(inps, outs);
     CV_Assert(outs.size() == noutputs);
+    int nout = (int)outidxs.size();
     std::vector<Mat>* outMats = nullptr;
     std::vector<UMat>* outUMats = nullptr;
     _InputArray::KindFlag outKind = outblobs.kind();
     if (outKind == _InputArray::STD_VECTOR_MAT) {
         outMats = &outblobs.getMatVecRef();
-        outMats->resize(noutputs);
+        outMats->resize(nout);
     } else if (outKind == _InputArray::STD_VECTOR_UMAT) {
         outUMats = &outblobs.getUMatVecRef();
-        outUMats->resize(noutputs);
+        outUMats->resize(nout);
     } else if (outKind == _InputArray::MAT || outKind == _InputArray::UMAT) {
-        CV_Assert(noutputs == 1);
+        CV_Assert(nout == 1);
     } else {
         CV_Error(Error::StsBadArg, "outputs must be Mat, UMat, a vector of Mat's or a vector of UMat's");
     }
-    for (i = 0; i < noutputs; i++) {
-        int j = outidxs.empty() ? i : outidxs[i];
+    for (i = 0; i < nout; i++) {
+        int j = outidxs[i];
         Mat src = outs[j];
         if (outMats) {
             src.copyTo(outMats->at(i));
@@ -506,15 +1164,84 @@ void Net::Impl::traceArg(std::ostream& strm_, const char* prefix, size_t i, Arg 
     }
     strm_ << "\n  Layout: " << layoutToString(shape.layout) << "\n";
     if (dumpdata && !constArg) {
-        // [TODO] when we support block layout, block-layout tensor
-        // should be converted to the original layout before printing it
-        pprint(strm_, m, 0, PPRINT_CONTEXT, PPRINT_ALL_THRESHOLD, '[');
+        Mat temp;
+        if (m.size.layout == DATA_LAYOUT_BLOCK) {
+            transformLayout(m, temp, originalLayout, originalLayout, m.size.C);
+        } else {
+            temp = m;
+        }
+        pprint(strm_, temp, 0, PPRINT_CONTEXT, PPRINT_ALL_THRESHOLD, '[');
         strm_ << "\n";
     }
 }
 
 void Net::Impl::setMainGraphInput(InputArray m, const std::string& inpname)
 {
+#ifdef HAVE_ONNXRUNTIME
+    if (useOrtEngine && ortNeedsReinit && mainGraph && modelFormat == DNN_MODEL_ONNX && !modelFileName.empty())
+    {
+        Mat inputMat = m.getMat();
+        if (inputMat.empty())
+            CV_Error(Error::StsBadArg, "DNN/ORT: Input blob is empty");
+
+        bool updated = false;
+        for (size_t i = 0; i < ort_staged_inputs.size(); ++i)
+        {
+            if (ort_staged_inputs[i].first == inpname)
+            {
+                inputMat.copyTo(ort_staged_inputs[i].second);
+                updated = true;
+                break;
+            }
+        }
+        if (!updated)
+            ort_staged_inputs.push_back(std::make_pair(inpname, inputMat.clone()));
+        return;
+    }
+
+    if (this->ort_session)
+    {
+        if (!this->ort_names_cache)
+            this->ort_names_cache = std::make_shared<OrtNamesCache>(*this->ort_session);
+
+        OrtNamesCache& names = *this->ort_names_cache;
+        const size_t ninputs = names.input_names.size();
+        if (ninputs == 0)
+            CV_Error(Error::StsError, "DNN/ORT: ORT session has no inputs");
+
+        if (!netInputLayer) {
+            netInputLayer = Ptr<DataLayer>(new DataLayer());
+            netInputLayer->name = "ort_data_layer";
+            netInputLayer->type = "Data";
+        }
+
+        Mat inputMat = m.getMat();
+        if (inputMat.empty())
+            CV_Error(Error::StsBadArg, "DNN/ORT: Input blob is empty");
+
+        if (netInputLayer->blobs.size() != ninputs)
+            netInputLayer->blobs.resize(ninputs);
+
+        size_t inputIdx = 0;
+        if (inpname.empty())
+        {
+            if (ninputs != 1)
+                CV_Error(Error::StsBadArg, "DNN/ORT: input name must be specified for models with multiple inputs");
+            inputIdx = 0;
+        }
+        else
+        {
+            auto it = names.input_name_to_index.find(inpname);
+            if (it == names.input_name_to_index.end())
+                CV_Error_(Error::StsObjectNotFound, ("DNN/ORT: input '%s' is not found", inpname.c_str()));
+            inputIdx = (size_t)it->second;
+        }
+
+        inputMat.copyTo(netInputLayer->blobs[inputIdx]);
+        return;
+    }
+#endif
+
     CV_Assert(mainGraph);
     const std::vector<Arg>& gr_inputs = mainGraph->inputs();
     size_t i, ninputs = gr_inputs.size();
@@ -563,11 +1290,10 @@ void Net::Impl::setGraphInput(Ptr<Graph>& graph, size_t idx, const Mat& m)
         if ((adata_type == CV_16F || adata_type == CV_16BF) && !enableFP16)
             adata_type = CV_32F;
 
-        if (adata_type != mtype &&
-            !((adata_type == CV_64F || adata_type == CV_32F || adata_type == CV_16F || adata_type == CV_16BF) &&
-              (mtype == CV_64F || mtype == CV_32F || mtype == CV_16F || mtype == CV_16BF)) &&
-            !((adata_type == CV_8U || adata_type == CV_8S || adata_type == CV_16U || adata_type == CV_16S || adata_type == CV_32S || adata_type == CV_32U || adata_type == CV_64S || adata_type == CV_64U) &&
-              (mtype == CV_8U || mtype == CV_8S || mtype == CV_16U || mtype == CV_16S || mtype == CV_32S || mtype == CV_32U || mtype == CV_64S || mtype == CV_64U)) &&
+        // setInput converts to the declared type, so any numeric source type is acceptable.
+        const bool aNumeric = CV_IS_INT_TYPE(adata_type) || CV_IS_FLOAT_TYPE(adata_type);
+        const bool mNumeric = CV_IS_INT_TYPE(mtype) || CV_IS_FLOAT_TYPE(mtype);
+        if (adata_type != mtype && !(aNumeric && mNumeric) &&
             !(adata.type == CV_16BF && mtype == CV_16U) && !(adata.type == CV_16F && mtype == CV_16U) &&
             !m.empty())
         {
@@ -576,8 +1302,7 @@ void Net::Impl::setGraphInput(Ptr<Graph>& graph, size_t idx, const Mat& m)
                                          typeToString(adata.type).c_str()));
         }
         Mat& inp_t = argTensor(inp);
-        if (inp_t.shape() != mshape || inp_t.type() != adata_type)
-            finalizeLayers = true;
+        // The op loop detects signature changes per layer; no global flag needed.
         inp_t.fit(mshape, adata_type);
 
         if (adata.type == CV_16BF && mtype == CV_16U)
@@ -606,6 +1331,168 @@ void Net::Impl::setGraphInput(Ptr<Graph>& graph, size_t idx, const Mat& m)
     }
 }
 
+#ifdef HAVE_CUDA
+// cv::cuda::Stream view over the (non-owning) cuda4dnn inference stream, so GpuMatND transfers
+// are ordered against the op compute that runs on the same cudaStream_t.
+static inline cuda::Stream wrapCudaStream(cuda4dnn::csl::Stream& s)
+{
+    return cuda::StreamAccessor::wrapStream(s.get());
+}
+
+// GpuMatND upload/download require at least one dimension (rank-0 shapes trip GpuMatND::setFields).
+// View a rank-0 scalar as a 1-element 1D header over the same data; higher-rank Mats pass through.
+static inline Mat asAtLeast1D(const Mat& m)
+{
+    if (m.shape().dims != 0)
+        return m;
+    int one = 1;
+    return Mat(1, &one, m.type(), const_cast<uchar*>(m.data));
+}
+
+// Device element type for a host tensor: float tensors are stored as half under the FP16 target,
+// everything else mirrors the host type. fit() reuses the existing allocation when large enough,
+// so buffers persist across forwards.
+int Net::Impl::cudaDeviceType(const Mat& hostMat) const
+{
+    if (preferableTarget == DNN_TARGET_CUDA_FP16 && CV_MAT_DEPTH(hostMat.type()) == CV_32F)
+        return CV_MAKETYPE(CV_16F, CV_MAT_CN(hostMat.type()));
+    return hostMat.type();
+}
+
+cuda::GpuMatND& Net::Impl::getCudaArgBuffer(Arg arg, const Mat& hostMat)
+{
+    int idx = arg.idx;
+    if ((int)cudaArgBuffers.size() != (int)args.size()) {
+        cudaArgBuffers.assign(args.size(), cuda::GpuMatND());
+        cudaArgHostDirty.assign(args.size(), 1);
+        cudaArgDeviceDirty.assign(args.size(), 0);
+    }
+    // GpuMatND (and cuda4dnn tensors) require at least one dimension; represent a rank-0 scalar
+    // tensor as a 1-element 1D tensor so element-wise ops still see the single value.
+    MatShape shape = hostMat.shape();
+    if (shape.dims == 0)
+        shape = MatShape({1});
+    cudaArgBuffers[idx].fit(shape, cudaDeviceType(hostMat));
+    return cudaArgBuffers[idx];
+}
+
+void Net::Impl::cudaSetHostDirty(Arg arg)
+{
+    int idx = arg.idx;
+    if (idx >= 0 && idx < (int)cudaArgHostDirty.size()) {
+        cudaArgHostDirty[idx] = 1;
+        cudaArgDeviceDirty[idx] = 0;
+    }
+}
+
+void Net::Impl::cudaUploadArg(Arg arg, const Mat& hostMat)
+{
+    int idx = arg.idx;
+    Mat src = asAtLeast1D(hostMat);
+    cuda::GpuMatND& g = getCudaArgBuffer(arg, src);
+    if (cudaArgHostDirty[idx]) {
+        cuda::Stream s = wrapCudaStream(cudaInfo->context.stream);
+        if (g.type() == src.type()) {
+            g.upload(src, s);
+        } else {
+            // FP32 -> FP16 (device stores half): convert on host, then copy up.
+            Mat tmp;
+            src.convertTo(tmp, CV_MAT_DEPTH(g.type()));
+            g.upload(tmp, s);
+        }
+        cudaArgHostDirty[idx] = 0;
+        cudaArgDeviceDirty[idx] = 0;
+    }
+}
+
+void Net::Impl::cudaDownloadArg(Arg arg, Mat& hostMat)
+{
+    int idx = arg.idx;
+    if (idx < 0 || idx >= (int)cudaArgDeviceDirty.size())
+        return;
+    if (cudaArgDeviceDirty[idx]) {
+        cuda::GpuMatND& g = cudaArgBuffers[idx];
+        cuda::Stream s = wrapCudaStream(cudaInfo->context.stream);
+        Mat dst = asAtLeast1D(hostMat);   // fill the scalar's storage through a 1D header
+        if (g.type() == dst.type()) {
+            g.download(dst, s);
+            cudaInfo->context.stream.synchronize();  // host read follows immediately
+        } else {
+            // device stores half: copy down, then convert up to the host FP32 tensor.
+            Mat tmp;
+            g.download(tmp, s);
+            cudaInfo->context.stream.synchronize();
+            tmp.convertTo(dst, dst.type());
+        }
+        cudaArgDeviceDirty[idx] = 0;
+        cudaArgHostDirty[idx] = 0;
+    }
+}
+
+static void forwardOpCUDA(Net::Impl* netimpl, GraphImpl* gimpl, size_t opidx,
+                          const std::vector<Arg>& inputs, const std::vector<Arg>& outputs,
+                          std::vector<Mat>& inpMats, std::vector<Mat>& outMats)
+{
+    Ptr<Layer> exec = gimpl->exec_[opidx];
+    CV_Assert(exec && netimpl->cudaInfo);
+    std::vector<cuda::GpuMatND> inpG(inputs.size()), outG(outputs.size());
+    for (size_t i = 0; i < inputs.size(); i++) {
+        netimpl->cudaUploadArg(inputs[i], inpMats[i]);   // H2D only if host-authoritative
+        inpG[i] = netimpl->cudaArgBuffers[inputs[i].idx];
+    }
+    for (size_t i = 0; i < outputs.size(); i++) {
+        outG[i] = netimpl->getCudaArgBuffer(outputs[i], outMats[i]);
+        int oidx = outputs[i].idx;                       // op writes the device buffer
+        netimpl->cudaArgDeviceDirty[oidx] = 1;
+        netimpl->cudaArgHostDirty[oidx] = 0;
+    }
+    exec->forwardCUDA(inpG, outG, &netimpl->cudaInfo->workspace);
+}
+#endif
+
+// Slice a Scan input at index `idx` along `axis`, removing that axis (contiguous result).
+static Mat sliceScanAxis(const Mat& m, int axis, int idx)
+{
+    std::vector<Range> r(m.dims, Range::all());
+    r[axis] = Range(idx, idx + 1);
+    Mat sub = m(r).clone();
+    std::vector<int> ns;
+    for (int d = 0; d < m.dims; d++)
+        if (d != axis) ns.push_back(m.size[d]);
+    if (ns.empty()) ns.push_back(1);
+    return sub.reshape(0, (int)ns.size(), &ns[0]);
+}
+
+// Stack per-iteration Scan outputs into one tensor with a new axis at `axis`.
+static Mat stackScanAxis(const std::vector<Mat>& perIter, int axis, bool reverse)
+{
+    if (perIter.empty()) return Mat();
+    const Mat& first = perIter[0];
+    const int e = first.dims, T = (int)perIter.size();
+    if (axis < 0) axis += e + 1;
+    CV_Assert(axis >= 0 && axis <= e);
+
+    std::vector<int> os, ss;
+    for (int d = 0; d < e; d++) {
+        if (d == axis) { os.push_back(T); ss.push_back(1); }
+        os.push_back(first.size[d]);
+        ss.push_back(first.size[d]);
+    }
+    if (axis == e) { os.push_back(T); ss.push_back(1); }
+
+    Mat stacked;
+    stacked.create((int)os.size(), &os[0], first.type());
+    for (int k = 0; k < T; k++) {
+        int idx = reverse ? (T - 1 - k) : k;
+        std::vector<Range> r(os.size(), Range::all());
+        r[axis] = Range(k, k + 1);
+        Mat dst = stacked(r);
+        Mat src = perIter[idx].reshape(0, (int)ss.size(), &ss[0]);
+        src.copyTo(dst);
+    }
+    return stacked;
+}
+
 void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
                              OutputArrayOfArrays outputs_, bool isMainGraph)
 {
@@ -614,7 +1501,8 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
         CV_Error_(Error::StsObjectNotFound, ("graph '%s' does not belong to the model", graph->name().c_str()));
     }
     std::ostream& strm_ = dump_strm ? *dump_strm : std::cout;
-    const std::vector<Ptr<Layer> >& prog = graph->prog();
+    GraphImpl* gimpl = static_cast<GraphImpl*>(graph.get());
+    const std::vector<Ptr<LayerInfo> >& prog = graph->prog();
     size_t i, nops = prog.size();
     const std::vector<Arg>& gr_inputs = graph->inputs();
     const std::vector<Arg>& gr_outputs = graph->outputs();
@@ -638,13 +1526,31 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
             setGraphInput(graph, i, m);
         }
     }
+#ifdef HAVE_CUDA
+    // Graph inputs are host-authoritative and may be updated between forward() calls
+    // (setInput writes them outside this function, so the loop above is skipped when
+    // forward() is called with no explicit inputs). Mark their device copies stale each
+    // forward so the current input is re-uploaded; otherwise a second forward with a
+    // changed input would read the previous forward's stale device data.
+    if (cudaInfo) {
+        for (i = 0; i < n_gr_inputs; i++)
+            cudaSetHostDirty(gr_inputs[i]);
+    }
+#endif
 
     for (size_t opidx = 0; opidx < nops; opidx++) {
-        const Ptr<Layer>& layer = prog.at(opidx);
-        if (!layer) // in theory we shouldn't have any 'nops' at this stage, but just in case we skip them.
+        const Ptr<LayerInfo>& op = prog.at(opidx);
+        if (!op) // in theory we shouldn't have any 'nops' at this stage, but just in case we skip them.
             continue;
-        const std::vector<Arg>& inputs = layer->inputs;
-        const std::vector<Arg>& outputs = layer->outputs;
+        Ptr<Layer> layer = (opidx < gimpl->exec_.size()) ? gimpl->exec_[opidx] : Ptr<Layer>();
+        if (!layer)
+            layer = op.dynamicCast<Layer>();
+        CV_Assert(layer);
+        int opBackend = (opidx < gimpl->execBackend_.size()) ? gimpl->execBackend_[opidx]
+                                                             : DNN_BACKEND_OPENCV;
+        CV_UNUSED(opBackend);  // only consumed by the HAVE_CUDA dispatch below
+        const std::vector<Arg>& inputs = op->inputs;
+        const std::vector<Arg>& outputs = op->outputs;
         size_t ninputs = inputs.size(), noutputs = outputs.size();
 
         inpMats.resize(ninputs);
@@ -655,7 +1561,13 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
 
         for (i = 0; i < ninputs; i++) {
             Arg inp = inputs[i];
-            //const ArgData& adata = args[inp.idx];
+#ifdef HAVE_CUDA
+            // CPU op: bring any device-resident input back to host before reading its
+            // shape/data. This must happen before allocateLayerOutputs(), which may fit()
+            // an in-place op's output onto this very buffer and rewrite its header.
+            if (opBackend != DNN_BACKEND_CUDA)
+                cudaDownloadArg(inp, argTensor(inp));
+#endif
             const Mat& m = argTensor(inp);
             inpMats[i] = m;
             inpTypes[i] = m.type();
@@ -664,15 +1576,15 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
 
         if (tracingMode != DNN_TRACE_NONE) {
             strm_ << "-----------\n";
-            strm_ << "'" << graph->name() << "' [" << opidx << "/" << nops << "]. " << layer->type << " node: " << layer->name << "\n";
+            strm_ << "'" << graph->name() << "' [" << opidx << "/" << nops << "]. " << op->type << " node: " << op->name << "\n";
             for (i = 0; i < ninputs; i++) {
                 Arg inp = inputs[i];
                 traceArg(strm_, "Input", i, inp, false);
             }
         }
-        bool dynamicOutShapes = layer->dynamicOutputShapes();
+        bool dynamicOutShapes = op->dynamicOutputShapes();
         if (!dynamicOutShapes) {
-            allocateLayerOutputs(layer, inpTypes, inpShapes, outTypes, outShapes, outOrigData, outMats,
+            allocateLayerOutputs(op, inpTypes, inpShapes, outTypes, outShapes, outOrigData, outMats,
                                  tempTypes, tempShapes, tempMats, scratchBufs, true);
         } else {
             outMats.resize(noutputs);
@@ -685,14 +1597,41 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
 
         timestamp = getTickCount();
 
-        std::vector<Ptr<Graph> >* subgraphs = layer->subgraphs();
+        std::vector<Ptr<Graph> >* subgraphs = op->subgraphs();
         if (!subgraphs) {
-            if (finalizeLayers)
-                layer->finalize(inpMats, outMats);
-            layer->forward(inpMats, outMats, tempMats);
+            // Blobs live on 'op', packed buffers on the executor 'layer'.
+            if (layer->packedWeightEpoch != op->weightEpoch) {
+                layer->prepackWeights();
+                layer->packedWeightEpoch = op->weightEpoch;
+                // New weights: re-finalize too, for layers that pack inside finalize().
+                layer->finalizedOnce = false;
+            }
+            // Re-finalize only when this layer's own input signature changed.
+            if (!layer->finalizedOnce || layer->lastInpShapes != inpShapes || layer->lastInpTypes != inpTypes) {
+                layer->finalize((InputArrayOfArrays)inpMats, (OutputArrayOfArrays)outMats);
+                layer->lastInpShapes = inpShapes;
+                layer->lastInpTypes = inpTypes;
+                layer->finalizedOnce = true;
+            }
+#ifdef HAVE_CUDA
+            if (opBackend == DNN_BACKEND_CUDA) {
+                forwardOpCUDA(this, gimpl, opidx, inputs, outputs, inpMats, outMats);
+            } else
+#endif
+            {
+                // Device-resident inputs were already synced to host in the capture loop above.
+                layer->forward(inpMats, outMats, tempMats);
+#ifdef HAVE_CUDA
+                // CPU produced fresh host data; invalidate any stale device copy of its outputs.
+                for (size_t k = 0; k < noutputs; k++)
+                    cudaSetHostDirty(outputs[k]);
+#endif
+            }
         }
         else {
             Ptr<IfLayer> iflayer = layer.dynamicCast<IfLayer>();
+            Ptr<LoopLayer> loopLayer = layer.dynamicCast<LoopLayer>();
+            Ptr<ScanLayer> scanLayer = layer.dynamicCast<ScanLayer>();
             if (iflayer) {
                 int branch = iflayer->branch(inpMats[0]);
                 Ptr<Graph> subgraph = subgraphs->at(branch);
@@ -701,9 +1640,160 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
                     branchInputs.assign(inpMats.begin() + 1, inpMats.end());
                 forwardGraph(subgraph, branchInputs, outMats, false);
             }
+            else if (loopLayer) {
+                CV_Assert(subgraphs->size() == 1);
+                Ptr<Graph> body = subgraphs->at(0);
+
+                int n_in = (int)inpMats.size();
+                int n_state = n_in - 2;
+                int n_accum = (int)body->outputs().size() - n_state - 1;
+                CV_Assert(n_in >= 2 && n_state >= 0 && n_accum >= 0);
+
+                Mat mIter, mCond, tmp;
+                mIter.create(1, 1, CV_64S);
+                if (inpMats[1].empty())
+                {
+                    mCond.create(1, 1, CV_8U);
+                    mCond.at<uchar>(0) = 1;
+                }
+                else
+                {
+                    mCond = inpMats[1];
+                }
+                int64 iter = 0;
+                int64 max_iter = inpMats[0].empty() ? -1 :
+                                 (inpMats[0].convertTo(tmp, CV_64S), *tmp.ptr<int64>());
+                bool active = loopLayer->cond(mCond);
+
+                std::vector<Mat> state(inpMats.begin() + 2, inpMats.end());
+                std::vector<std::vector<Mat> > history(n_accum);
+                std::vector<Mat> inputs(n_in), outputs;
+
+                while (active && (max_iter < 0 || iter < max_iter)) {
+                    mIter.at<int64>(0) = iter++;
+                    inputs[0] = mIter;
+                    inputs[1] = mCond;
+                    std::copy(state.begin(), state.end(), inputs.begin() + 2);
+
+                    forwardGraph(body, inputs, outputs, false);
+
+                    mCond = outputs[0];
+                    active = loopLayer->cond(mCond);
+
+                    // Deep-copy: body buffers (and their UMats via Mat::fit reuse) are recycled across iterations.
+                    for (int i = 0; i < n_state; i++)
+                        state[i] = outputs[1 + i].clone();
+                    for (int i = 0; i < n_accum; i++)
+                        history[i].push_back(outputs[1 + n_state + i].clone());
+                }
+
+                outMats.assign(state.begin(), state.end());
+                outMats.resize(n_state + n_accum);
+
+                for (int i = 0; i < n_accum; ++i) {
+                    const std::vector<Mat>& perIter = history[i];
+                    if (perIter.empty()) {
+                        outMats[n_state + i] = Mat();
+                        continue;
+                    }
+
+                    const Mat& first = perIter[0];
+                    MatShape elemShape = first.shape();
+                    int ndims = elemShape.dims;
+                    CV_Assert(ndims >= 0);
+
+                    MatShape outShape(ndims + 1);
+                    outShape[0] = (int)perIter.size();
+                    for (int d = 0; d < ndims; ++d)
+                        outShape[d + 1] = elemShape[d];
+
+                    Mat stacked;
+                    stacked.create(outShape, first.type());
+
+                    for (size_t k = 0; k < perIter.size(); ++k)
+                    {
+                        const Mat& src = perIter[k];
+                        CV_Assert(src.type() == first.type());
+                        CV_Assert(src.total() == first.total());
+
+                        Mat dst = stacked.reshape(0, (int)perIter.size())
+                                         .row((int)k)
+                                         .reshape(first.channels(), elemShape.dims, &elemShape[0]);
+                        src.copyTo(dst);
+                    }
+                    outMats[n_state + i] = stacked;
+                }
+            }
+            else if (scanLayer) {
+                CV_Assert(subgraphs->size() == 1);
+                Ptr<Graph> body = subgraphs->at(0);
+
+                const int M = scanLayer->numScanInputs();
+                const int bodyNIn = (int)body->inputs().size();
+                const int S = bodyNIn - M;              // loop-carried state count
+                const int K = (int)body->outputs().size() - S;  // scan output count
+                CV_Assert(M > 0 && S >= 0 && K >= 0);
+
+                // Reject opset-8 (batch dim + sequence_lens); those semantics are not implemented.
+                CV_CheckEQ((int)inpMats.size(), S + M,
+                           "Scan: opset-8 form (batch dim + sequence_lens) is not supported; re-export with opset>=9");
+
+                const std::vector<int>& iax = scanLayer->scanInputAxes();
+                const std::vector<int>& oax = scanLayer->scanOutputAxes();
+                const std::vector<int>& idir = scanLayer->scanInputDirections();
+                const std::vector<int>& odir = scanLayer->scanOutputDirections();
+                const std::vector<int>& orank = scanLayer->scanOutputRanks();
+
+                std::vector<Mat> scanIn(M);
+                std::vector<int> inAxis(M);
+                std::vector<char> inRev(M);
+                int T = -1;
+                for (int j = 0; j < M; j++) {
+                    scanIn[j] = inpMats[S + j];
+                    int ax = iax.empty() ? 0 : iax[j];
+                    if (ax < 0) ax += scanIn[j].dims;
+                    inAxis[j] = ax;
+                    inRev[j] = (char)(!idir.empty() && idir[j] != 0);
+                    int len = scanIn[j].size[ax];
+                    if (T < 0) T = len; else CV_Assert(T == len);
+                }
+                CV_Assert(T >= 0);
+
+                std::vector<Mat> state(S);
+                for (int i = 0; i < S; i++) state[i] = inpMats[i];
+
+                std::vector<std::vector<Mat> > history(K);
+                std::vector<Mat> inputs(bodyNIn), outputs;
+
+                for (int t = 0; t < T; t++) {
+                    for (int i = 0; i < S; i++) inputs[i] = state[i];
+                    for (int j = 0; j < M; j++) {
+                        int idx = inRev[j] ? (T - 1 - t) : t;
+                        inputs[S + j] = sliceScanAxis(scanIn[j], inAxis[j], idx);
+                    }
+                    forwardGraph(body, inputs, outputs, false);
+                    // Deep-copy: body buffers are recycled across iterations.
+                    // TODO: alias state in/out buffers like Loop to drop this copy.
+                    for (int i = 0; i < S; i++) state[i] = outputs[i].clone();
+                    for (int k = 0; k < K; k++) history[k].push_back(outputs[S + k].clone());
+                }
+
+                outMats.assign(state.begin(), state.end());
+                outMats.resize(S + K);
+                for (int k = 0; k < K; k++) {
+                    int ax = oax.empty() ? 0 : oax[k];
+                    bool rev = !odir.empty() && odir[k] != 0;
+                    // 0-D scalar output is stored as [1]; drop it so T scalars stack to [T], not [T,1].
+                    if (k < (int)orank.size() && orank[k] == 0) {
+                        for (Mat& e : history[k])
+                            e = e.reshape(0, 0, nullptr);
+                    }
+                    outMats[S + k] = stackScanAxis(history[k], ax, rev);
+                }
+            }
             else {
                 CV_Error_(Error::StsNotImplemented,
-                          ("unknown layer type '%s' with subgraphs", layer->type.c_str()));
+                          ("unknown layer type '%s' with subgraphs", op->type.c_str()));
             }
         }
         CV_Assert(outMats.size() == noutputs);
@@ -727,7 +1817,7 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
                                 buf.type() == m.type(),
                                 (!m.u || m.u->data == outOrigData[i].first),
                                 (!m.u || m.u->size == outOrigData[i].second));
-                } else if (!buf.u || m.u->size > buf.u->size) {
+                } else if (!buf.u || (m.u && m.u->size > buf.u->size)) {
                     buf = m;
                 } else {
                     // this branch means that the layer still calls
@@ -737,7 +1827,35 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
                     m.copyTo(buf);
                 }
             } else {
+                if (!dynamicOutShapes) {
+                    // the same sanity check for non-temp (graph output/state) tensors: the layer must
+                    // write into the preallocated tensor of the inferred shape/type. A mismatch here
+                    // means some op inside Layer::forward() reallocated it (e.g. a broadcast produced
+                    // an unexpected shape) and the result would silently detach from the graph.
+                    if (m.shape() != outShapes[i] || m.type() != outTypes[i] ||
+                        (m.u && (m.u->data != outOrigData[i].first || m.u->size != outOrigData[i].second)))
+                    {
+                        std::ostringstream oss;
+                        oss << "layer '" << layer->name << "' (" << layer->type << "): output #" << i
+                            << " changed during forward(): inferred shape " << outShapes[i]
+                            << " / type " << typeToString(outTypes[i])
+                            << ", actual " << m.shape() << " / " << typeToString(m.type())
+                            << (m.u && m.u->data != outOrigData[i].first
+                                ? "; the tensor was reallocated (the layer must write in place)" : "");
+                        CV_Error(Error::StsInternal, oss.str());
+                    }
+                }
                 __tensors__.at(out.idx) = m;
+            }
+        }
+
+        size_t ntemps = tempMats.size();
+        scratchBufs.resize(std::max(ntemps, scratchBufs.size()));
+        for (size_t i = 0; i < ntemps; i++) {
+            size_t newtotal_i = tempMats[i].total()*tempMats[i].elemSize();
+            size_t total_i = scratchBufs[i].total()*scratchBufs[i].elemSize();
+            if (newtotal_i > total_i) {
+                scratchBufs[i] = tempMats[i];
             }
         }
 
@@ -758,10 +1876,33 @@ void Net::Impl::forwardGraph(Ptr<Graph>& graph, InputArrayOfArrays inputs_,
     outputsVec.resize(n_gr_outputs);
     for (i = 0; i < n_gr_outputs; i++) {
         Arg out = gr_outputs[i];
+#ifdef HAVE_CUDA
+        // A graph output produced on the device must be brought back to host before it is read.
+        if (out.idx >= 0) {
+            Mat& t = argTensor(out);
+            cudaDownloadArg(out, t);
+        }
+#endif
         const Mat& outm = argTensor(out);
         if (isMainGraph) {
-            outputsVec[i].fit(outm.shape(), outm.type());
-            outm.copyTo(outputsVec[i]);
+            if (outm.size.layout == DATA_LAYOUT_BLOCK) {
+                transformLayout(outm, outputsVec[i], originalLayout, originalLayout, outm.size.C);
+            } else {
+                outputsVec[i].fit(outm.shape(), outm.type());
+                outm.copyTo(outputsVec[i]);
+            }
+            // Narrow to the declared output dtype when an op computed in a wider type.
+            // Half is excepted: the graph was widened, so narrowing would only lose precision.
+            int declaredOutType = i < mainGraphOutTypes.size() ? mainGraphOutTypes[i] : -1;
+            if (!enableFP16 && (declaredOutType == CV_16F || declaredOutType == CV_16BF))
+                declaredOutType = -1;
+            if (declaredOutType >= 0 && !outputsVec[i].empty() &&
+                outputsVec[i].depth() != CV_MAT_DEPTH(declaredOutType))
+            {
+                Mat tmp;
+                outputsVec[i].convertTo(tmp, CV_MAT_DEPTH(declaredOutType));
+                outputsVec[i] = tmp;
+            }
         } else {
             outputsVec[i] = outm;
         }
@@ -778,8 +1919,8 @@ void Net::Impl::updateUseCounts(const Ptr<Graph>& graph, std::vector<int>& useco
         CV_Assert(output.idx < (int)usecounts.size());
         usecounts[output.idx]++;
     }
-    const std::vector<Ptr<Layer> >& prog = graph->prog();
-    for (const Ptr<Layer>& layer: prog) {
+    const std::vector<Ptr<LayerInfo> >& prog = graph->prog();
+    for (const Ptr<LayerInfo>& layer: prog) {
         const std::vector<Arg>& inputs = layer->inputs;
         for (const Arg& input: inputs) {
             CV_Assert(input.idx < (int)usecounts.size());
@@ -810,14 +1951,14 @@ int Net::Impl::updateGraphOfs(const Ptr<Graph>& graph, int currofs, bool ismain)
         allgraphs.clear();
         layerNameToId.clear();
     }
-    const std::vector<Ptr<Layer> >& prog = graph->prog();
+    const std::vector<Ptr<LayerInfo> >& prog = graph->prog();
     size_t i, nops = prog.size();
     int subgraph_ofs = currofs + (int)nops;
     std::string name = graph->name();
     graphofs.insert(std::make_pair(name, currofs));
     allgraphs.push_back(graph);
     for (i = 0; i < nops; i++) {
-        const Ptr<Layer>& layer = prog[i];
+        const Ptr<LayerInfo>& layer = prog[i];
         layerNameToId.insert(std::make_pair(layer->name, currofs + (int)i));
         const std::vector<Ptr<Graph> >* subgraphs = layer->subgraphs();
         if (subgraphs) {
@@ -964,12 +2105,12 @@ bool Net::Impl::tryInferGraphShapes(const Ptr<Graph>& graph,
     if (!graph)
         return true;
 
-    const std::vector<Ptr<Layer> >& prog = graph->prog();
+    const std::vector<Ptr<LayerInfo> >& prog = graph->prog();
 
     std::vector<MatShape> inpShapes, outShapes, tempShapes;
     std::vector<int> inpTypes, outTypes, tempTypes;
 
-    for (const Ptr<Layer>& layer: prog) {
+    for (const Ptr<LayerInfo>& layer: prog) {
         if (!layer)
             continue;
 
@@ -1025,6 +2166,9 @@ bool Net::Impl::tryInferGraphShapes(const Ptr<Graph>& graph,
         CV_Assert((int)outShapes.size() == noutputs);
         layer->getTypes(inpTypes, noutputs, (int)tempShapes.size(), outTypes, tempTypes);
         CV_Assert((int)outTypes.size() == noutputs);
+
+        for (int i = 0; i < (int)tempShapes.size(); i++)
+            CV_CheckGT(total(tempShapes[i]), (size_t)0, "");
 
         for (int i = 0; i < noutputs; i++) {
             Arg out = outputs[i];

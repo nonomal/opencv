@@ -1,8 +1,9 @@
 #include <iostream>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/3d.hpp>
+#include <opencv2/geometry.hpp>
 #include <opencv2/calib.hpp>
+#include <opencv2/objdetect.hpp>
 #include <opencv2/highgui.hpp>
 
 using namespace std;
@@ -54,7 +55,7 @@ void perspectiveCorrection(const string &img1Path, const string &img2Path, const
     hconcat(img1, img2, img_draw_matches);
     for (size_t i = 0; i < corners1.size(); i++)
     {
-        Mat pt1 = (Mat_<double>(3,1) << corners1[i].x, corners1[i].y, 1);
+        Mat pt1 = Mat_<double>({3,1}, {corners1[i].x, corners1[i].y, 1});
         Mat pt2 = H * pt1;
         pt2 /= pt2.at<double>(2);
 

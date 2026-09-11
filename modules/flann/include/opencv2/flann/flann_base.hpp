@@ -1,4 +1,4 @@
-/***********************************************************************
+/*M*********************************************************************
  * Software License Agreement (BSD License)
  *
  * Copyright 2008-2009  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
@@ -50,11 +50,11 @@ class FILEScopeGuard {
 public:
     explicit FILEScopeGuard(FILE* file) {
         file_ = file;
-    };
+    }
 
     ~FILEScopeGuard() {
         fclose(file_);
-    };
+    }
 
 private:
     FILE* file_;

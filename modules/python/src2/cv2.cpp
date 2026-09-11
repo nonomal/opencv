@@ -46,9 +46,9 @@ typedef std::vector<Scalar> vector_Scalar;
 #ifdef HAVE_OPENCV_OBJDETECT
 typedef std::vector<aruco::Dictionary> vector_Dictionary;
 #endif // HAVE_OPENCV_OBJDETECT
-#ifdef HAVE_OPENCV_3D
+#ifdef HAVE_OPENCV_GEOMETRY
 typedef std::vector<MSTEdge> vector_MSTEdge;
-#endif // HAVE_OPENCV_3D
+#endif // HAVE_OPENCV_GEOMETRY
 
 typedef std::vector<std::vector<char> > vector_vector_char;
 typedef std::vector<std::vector<Point> > vector_vector_Point;
@@ -227,7 +227,7 @@ static PyObject* createSubmodule(PyObject* parent_module, const std::string& nam
             }
             /// Populates parent module dictionary. Submodule lifetime should be managed
             /// by the global modules dictionary and parent module dictionary, so Py_DECREF after
-            /// successfull call to the `PyDict_SetItemString` is redundant.
+            /// successful call to the `PyDict_SetItemString` is redundant.
             if (PyDict_SetItemString(parent_module_dict, submodule_name.c_str(), submodule) < 0) {
                 return PyErr_Format(PyExc_ImportError,
                     "Can't register a submodule '%s' (full name: '%s')",

@@ -95,8 +95,23 @@ if(WITH_JPEG)
   macro(ocv_detect_jpeg_version header_file)
     if(NOT DEFINED JPEG_LIB_VERSION AND EXISTS "${header_file}")
       ocv_parse_header("${header_file}" JPEG_VERSION_LINES JPEG_LIB_VERSION)
+
+      if(DEFINED JPEG_LIB_VERSION)
+        # Extract libjpeg-turbo version from the header file if JPEG_LIB_VERSION is found.
+        file(STRINGS "${header_file}" JPEG_TURBO_VERSION_LINE REGEX "^#define[\t ]+LIBJPEG_TURBO_VERSION[\t ]")
+
+        if(JPEG_TURBO_VERSION_LINE)
+          # Support both raw values (e.g., 3.1.2) and quoted strings (e.g., "3.1.2").
+          string(REGEX REPLACE "^#define[\t ]+LIBJPEG_TURBO_VERSION[\t ]+\"?([^\"]+)\"?.*" "\\1" JPEG_TURBO_VERSION_STRING "${JPEG_TURBO_VERSION_LINE}")
+          if(JPEG_TURBO_VERSION_STRING)
+            string(STRIP "${JPEG_TURBO_VERSION_STRING}" JPEG_TURBO_VERSION_STRING)
+            set(JPEG_LIB_VERSION "${JPEG_TURBO_VERSION_STRING}-${JPEG_LIB_VERSION}")
+          endif()
+        endif()
+      endif()
     endif()
   endmacro()
+
   ocv_detect_jpeg_version("${JPEG_INCLUDE_DIR}/jpeglib.h")
   if(DEFINED CMAKE_CXX_LIBRARY_ARCHITECTURE)
     ocv_detect_jpeg_version("${JPEG_INCLUDE_DIR}/${CMAKE_CXX_LIBRARY_ARCHITECTURE}/jconfig.h")
@@ -326,7 +341,7 @@ if(NOT HAVE_SPNG AND WITH_PNG)
   if(BUILD_PNG)
     ocv_clear_vars(PNG_FOUND)
   else()
-    ocv_clear_internal_cache_vars(PNG_LIBRARY PNG_INCLUDE_DIR)
+    ocv_clear_internal_cache_vars(PNG_LIBRARY PNG_INCLUDE_DIR PNG_PNG_INCLUDE_DIR)
     find_package(PNG QUIET)
   endif()
 
@@ -339,6 +354,18 @@ if(NOT HAVE_SPNG AND WITH_PNG)
     set(PNG_INCLUDE_DIR "${${PNG_LIBRARY}_SOURCE_DIR}" CACHE INTERNAL "")
     set(PNG_DEFINITIONS "")
     ocv_parse_header_version(PNG "${PNG_INCLUDE_DIR}/png.h" PNG_LIBPNG_VER_STRING)
+  endif()
+
+  if(BUILD_PNG)
+    # Downstream find_package(PNG) calls from transitive dependencies
+    # (included via include() in the same scope) may overwrite PNG_FOUND
+    # and related variables. PNG_LIBRARY is naturally protected by
+    # FindPNG's "if(NOT PNG_LIBRARY)" guard, but PNG_PNG_INCLUDE_DIR
+    # (searched via find_path without a guard) and its derived variables
+    # (PNG_INCLUDE_DIR, PNG_LIBRARIES, PNG_VERSION_STRING) are not.
+    # Lock PNG_PNG_INCLUDE_DIR so that find_path() respects the cached
+    # bundled path and skips the system search.
+    set(PNG_PNG_INCLUDE_DIR "${PNG_INCLUDE_DIR}" CACHE INTERNAL "PNG include dir (bundled)")
   endif()
 
   set(HAVE_PNG YES)

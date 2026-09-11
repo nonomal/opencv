@@ -9,12 +9,16 @@
         "FastFeatureDetector" : { "DetectorType": "FastDetectorType" }
     },
     "func_arg_fix" : {
+        "goodFeaturesToTrack" : { "corners" : {"ctype" : "vector_Point"} },
         "Feature2D": {
             "(void)compute:(NSArray<Mat*>*)images keypoints:(NSMutableArray<NSMutableArray<KeyPoint*>*>*)keypoints descriptors:(NSMutableArray<Mat*>*)descriptors" : { "compute" : {"name" : "compute2"} },
             "(void)detect:(NSArray<Mat*>*)images keypoints:(NSMutableArray<NSMutableArray<KeyPoint*>*>*)keypoints masks:(NSArray<Mat*>*)masks" : { "detect" : {"name" : "detect2"} }
         },
         "DescriptorMatcher": {
             "(DescriptorMatcher*)create:(NSString*)descriptorMatcherType" : { "create" : {"name" : "create2"} }
+        },
+        "LightGlueMatcher": {
+            "(LightGlueMatcher*)create:(NSString*)modelPath scoreThreshold:(float)scoreThreshold backend:(int)backend target:(int)target" : { "create" : {"name" : "createFromFile"} }
         },
         "FlannBasedMatcher": {
             "FlannBasedMatcher": { "indexParams" : {"defval" : "cv::makePtr<cv::flann::KDTreeIndexParams>()"}, "searchParams" : {"defval" : "cv::makePtr<cv::flann::SearchParams>()"} }

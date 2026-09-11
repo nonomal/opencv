@@ -689,6 +689,28 @@ TEST(Imgcodecs_Tiff, readWrite_unsigned)
     EXPECT_EQ(0, remove(filenameOutput.c_str()));
 }
 
+// See https://github.com/opencv/opencv/issues/29615
+// Decoding a 16-bit 4-channel TIFF used to form an out of range pointer in
+// icvCvt_BGRA2RGBA_16u_C4R because the byte step was divided by an unsigned
+// sizeof and then had size.width*4 subtracted, which wraps around for a zero
+// step. This just checks that a 16UC4 TIFF round-trips correctly; the value is
+// mainly that the sanitizer builds no longer report the pointer overflow.
+TEST(Imgcodecs_Tiff, regression_29615_16UC4)
+{
+    Mat img(4, 3, CV_16UC4);
+    randu(img, Scalar::all(0), Scalar::all(65535));
+
+    vector<uchar> buf;
+    ASSERT_NO_THROW(ASSERT_TRUE(imencode(".tiff", img, buf)));
+
+    Mat decoded;
+    ASSERT_NO_THROW(decoded = imdecode(buf, IMREAD_UNCHANGED));
+    ASSERT_FALSE(decoded.empty());
+    ASSERT_EQ(CV_16UC4, decoded.type());
+    ASSERT_EQ(img.size(), decoded.size());
+    EXPECT_EQ(0, cvtest::norm(img, decoded, NORM_INF));
+}
+
 TEST(Imgcodecs_Tiff, readWrite_32FC1)
 {
     const string root = cvtest::TS::ptr()->get_data_path();
@@ -937,7 +959,7 @@ Imgcodes_Tiff_TypeAndComp all_types[] = {
     { CV_32SC1, true  }, { CV_32SC3, true  }, { CV_32SC4, true  },
     { CV_64UC1, true  }, { CV_64UC3, true  }, { CV_64UC4, true  },
     { CV_64SC1, true  }, { CV_64SC3, true  }, { CV_64SC4, true  },
-    { CV_32FC1, false }, { CV_32FC3, false }, { CV_32FC4, false }, // No compression
+    { CV_32FC1, true  }, { CV_32FC3, true  }, { CV_32FC4, true  },
     { CV_64FC1, false }, { CV_64FC3, false }, { CV_64FC4, false }  // No compression
 };
 
@@ -1102,7 +1124,7 @@ TEST(Imgcodecs_Tiff_Modes, write_multipage)
     ASSERT_TRUE(res);
 
     vector<Mat> read_pages;
-    imreadmulti(tmp_filename, read_pages);
+    imreadmulti(tmp_filename, read_pages, cv::IMREAD_ANYCOLOR);
     for (size_t i = 0; i < page_count; i++)
     {
         EXPECT_PRED_FORMAT2(cvtest::MatComparator(0, 0), read_pages[i], pages[i]);
@@ -1295,6 +1317,47 @@ TEST(Imgcodecs_Tiff, read_junk) {
     ASSERT_NO_THROW(img = cv::imdecode(junkInputArray, IMREAD_UNCHANGED));
     ASSERT_TRUE(img.empty());
 }
+
+
+typedef int Imgcodecs_Tiff_32F_Compressions_32F_Values;
+typedef testing::TestWithParam<Imgcodecs_Tiff_32F_Compressions_32F_Values> Imgcodecs_Tiff_32F_Compressions_32F;
+
+TEST_P(Imgcodecs_Tiff_32F_Compressions_32F, compressions_32F)
+{
+    const int compression = GetParam();
+
+    const Size size(64, 64);
+    Mat src = Mat(size, CV_32FC1);
+    cv::randu(src, cv::Scalar::all(0.), cv::Scalar::all(1.));
+
+    std::vector<int> params;
+    if (compression > 0)
+    {
+      params.push_back(IMWRITE_TIFF_COMPRESSION);
+      params.push_back(compression);
+    }
+
+    std::vector<unsigned char> encoded_data;
+    imencode(".tiff", src, encoded_data, params);
+
+    Mat dst;
+    imdecode(encoded_data, IMREAD_UNCHANGED, &dst);
+
+    EXPECT_LE(cvtest::norm(src, dst, NORM_INF), 1e-6);
+}
+
+const int Imgcodecs_Tiff_32F_Compressions_32F_All_Values[] =
+{
+    -1,//will mean "default"
+    IMWRITE_TIFF_COMPRESSION_NONE,
+    IMWRITE_TIFF_COMPRESSION_LZW,
+    //IMWRITE_TIFF_COMPRESSION_LZMA,//might not be configured
+    //IMWRITE_TIFF_COMPRESSION_ZSTD,//might not be configured
+    //IMWRITE_TIFF_COMPRESSION_DEFLATE,//deprecated
+    IMWRITE_TIFF_COMPRESSION_ADOBE_DEFLATE,
+};
+
+INSTANTIATE_TEST_CASE_P(compressions_32F, Imgcodecs_Tiff_32F_Compressions_32F, testing::ValuesIn(Imgcodecs_Tiff_32F_Compressions_32F_All_Values));
 
 #endif
 

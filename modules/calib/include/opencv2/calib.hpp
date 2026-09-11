@@ -7,7 +7,6 @@
 
 #include "opencv2/core.hpp"
 #include "opencv2/core/types.hpp"
-#include "opencv2/features.hpp"
 #include "opencv2/core/affine.hpp"
 
 /**
@@ -180,7 +179,7 @@ Z_w \\
 
 The following figure illustrates the pinhole camera model.
 
-![Pinhole camera model](pics/pinhole_camera_model.png)
+![Pinhole camera model](pics/pinhole_camera_model.png) { width=70% }
 
 Real lenses usually have some distortion, mostly radial distortion, and slight tangential distortion.
 So, the above model is extended as:
@@ -487,22 +486,6 @@ namespace cv {
 //! @addtogroup calib
 //! @{
 
-enum { CALIB_CB_ADAPTIVE_THRESH = 1,
-       CALIB_CB_NORMALIZE_IMAGE = 2,
-       CALIB_CB_FILTER_QUADS    = 4,
-       CALIB_CB_FAST_CHECK      = 8,
-       CALIB_CB_EXHAUSTIVE      = 16,
-       CALIB_CB_ACCURACY        = 32,
-       CALIB_CB_LARGER          = 64,
-       CALIB_CB_MARKER          = 128,
-       CALIB_CB_PLAIN           = 256
-     };
-
-enum { CALIB_CB_SYMMETRIC_GRID  = 1,
-       CALIB_CB_ASYMMETRIC_GRID = 2,
-       CALIB_CB_CLUSTERING      = 4
-     };
-
 #define CALIB_NINTRINSIC 18 //!< Maximal size of camera internal parameters (initrinsics) vector
 
 enum CameraModel {
@@ -510,30 +493,31 @@ enum CameraModel {
     CALIB_MODEL_FISHEYE = 1, //!< Fisheye camera model
 };
 
-enum { CALIB_USE_INTRINSIC_GUESS = 0x00001, //!< Use user provided intrinsics as initial point for optimization.
-       CALIB_FIX_ASPECT_RATIO    = 0x00002, //!< Use with CALIB_USE_INTRINSIC_GUESS. The ratio fx/fy stays the same as in the input cameraMatrix.
-       CALIB_FIX_PRINCIPAL_POINT = 0x00004, //!< The principal point (cx, cy) stays the same as in the input camera matrix. Image center is used as principal point, if CALIB_USE_INTRINSIC_GUESS is not set.
-       CALIB_ZERO_TANGENT_DIST   = 0x00008, //!< For pinhole model only. Tangential distortion coefficients \f$(p_1, p_2)\f$ are set to zeros and stay zero.
-       CALIB_FIX_FOCAL_LENGTH    = 0x00010, //!< Use with CALIB_USE_INTRINSIC_GUESS. The focal length (fx, fy) stays the same as in the input cameraMatrix.
-       CALIB_FIX_K1              = 0x00020, //!< The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
-       CALIB_FIX_K2              = 0x00040, //!< The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
-       CALIB_FIX_K3              = 0x00080, //!< The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
-       CALIB_FIX_K4              = 0x00800, //!< The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
-       CALIB_FIX_K5              = 0x01000, //!< For pinhole model only. The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
-       CALIB_FIX_K6              = 0x02000, //!< For pinhole model only. The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
-       CALIB_RATIONAL_MODEL      = 0x04000, //!< For pinhole model only. Use rational distortion model with coefficients k4..k6.
-       CALIB_THIN_PRISM_MODEL    = 0x08000, //!< For pinhole model only. Use thin prism distortion model with coefficients s1..s4.
-       CALIB_FIX_S1_S2_S3_S4     = 0x10000, //!< For pinhole model only. The thin prism distortion coefficients are not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
-       CALIB_TILTED_MODEL        = 0x40000, //!< For pinhole model only. Coefficients tauX and tauY are enabled in camera matrix.
-       CALIB_FIX_TAUX_TAUY       = 0x80000, //!< For pinhole model only. The tauX and tauY coefficients are not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
-       CALIB_USE_QR              = 0x100000, //!< Use QR instead of SVD decomposition for solving. Faster but potentially less precise
-       CALIB_FIX_TANGENT_DIST    = 0x200000, //!< For pinhole model only. Tangential distortion coefficients (p1,p2) are set to zeros and stay zero.
+enum { CALIB_USE_INTRINSIC_GUESS = (1 << 0), //!< Use user provided intrinsics as initial point for optimization.
+       CALIB_FIX_ASPECT_RATIO    = (1 << 1), //!< Use with CALIB_USE_INTRINSIC_GUESS. The ratio fx/fy stays the same as in the input cameraMatrix.
+       CALIB_FIX_PRINCIPAL_POINT = (1 << 2), //!< The principal point (cx, cy) stays the same as in the input camera matrix. Image center is used as principal point, if CALIB_USE_INTRINSIC_GUESS is not set.
+       CALIB_ZERO_TANGENT_DIST   = (1 << 3), //!< For pinhole model only. Tangential distortion coefficients \f$(p_1, p_2)\f$ are set to zeros and stay zero.
+       CALIB_FIX_FOCAL_LENGTH    = (1 << 4), //!< Use with CALIB_USE_INTRINSIC_GUESS. The focal length (fx, fy) stays the same as in the input cameraMatrix.
+       CALIB_FIX_K1              = (1 << 5), //!< The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
+       CALIB_FIX_K2              = (1 << 6), //!< The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
+       CALIB_FIX_K3              = (1 << 7), //!< The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
+       CALIB_FIX_K4              = (1 << 11), //!< The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
+       CALIB_FIX_K5              = (1 << 12), //!< For pinhole model only. The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
+       CALIB_FIX_K6              = (1 << 13), //!< For pinhole model only. The corresponding distortion coefficient is not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
+       CALIB_RATIONAL_MODEL      = (1 << 14), //!< For pinhole model only. Use rational distortion model with coefficients k4..k6.
+       CALIB_THIN_PRISM_MODEL    = (1 << 15), //!< For pinhole model only. Use thin prism distortion model with coefficients s1..s4.
+       CALIB_FIX_S1_S2_S3_S4     = (1 << 16), //!< For pinhole model only. The thin prism distortion coefficients are not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
+       CALIB_TILTED_MODEL        = (1 << 18), //!< For pinhole model only. Coefficients tauX and tauY are enabled in camera matrix.
+       CALIB_FIX_TAUX_TAUY       = (1 << 19), //!< For pinhole model only. The tauX and tauY coefficients are not changed during the optimization. 0 value is used, if CALIB_USE_INTRINSIC_GUESS is not set.
+       CALIB_USE_QR              = (1 << 20), //!< Use QR instead of SVD decomposition for solving. Faster but potentially less precise
+       CALIB_FIX_TANGENT_DIST    = (1 << 21), //!< For pinhole model only. Tangential distortion coefficients (p1,p2) are set to zeros and stay zero.
        // only for stereo
-       CALIB_FIX_INTRINSIC       = 0x00100, //!< For stereo and milti-camera calibration only. Do not optimize cameras intrinsics
-       CALIB_SAME_FOCAL_LENGTH   = 0x00200, //!< For stereo calibration only. Use the same focal length for cameras in pair.
+       CALIB_FIX_INTRINSIC       = (1 << 8), //!< For stereo and milti-camera calibration only. Do not optimize cameras intrinsics
+       CALIB_SAME_FOCAL_LENGTH   = (1 << 9), //!< For stereo calibration only. Use the same focal length for cameras in pair.
        // for stereo rectification
-       CALIB_ZERO_DISPARITY      = 0x00400, //!< Deprecated synonim of @ref STEREO_ZERO_DISPARITY. See @ref stereoRectify.
+       CALIB_ZERO_DISPARITY      = (1 << 10), //!< Deprecated synonim of @ref STEREO_ZERO_DISPARITY. See @ref stereoRectify.
        CALIB_USE_LU              = (1 << 17), //!< use LU instead of SVD decomposition for solving. much faster but potentially less precise
+       CALIB_DISABLE_SCHUR_COMPLEMENT = (1 << 27),  //!< disable Schur complement (use Bouguet calibration engine)
        CALIB_USE_EXTRINSIC_GUESS = (1 << 22), //!< For stereo and multi-view calibration. Use user provided extrinsics (R, T) as initial point for optimization
        // fisheye only flags
        CALIB_RECOMPUTE_EXTRINSIC = (1 << 23), //!< For fisheye model only. Recompute board position on each calibration iteration
@@ -575,257 +559,6 @@ object point has z-coordinate =0.
 CV_EXPORTS_W Mat initCameraMatrix2D( InputArrayOfArrays objectPoints,
                                      InputArrayOfArrays imagePoints,
                                      Size imageSize, double aspectRatio = 1.0 );
-
-/** @brief Finds the positions of internal corners of the chessboard.
-
-@param image Source chessboard view. It must be an 8-bit grayscale or color image.
-@param patternSize Number of inner corners per a chessboard row and column
-( patternSize = cv::Size(points_per_row,points_per_colum) = cv::Size(columns,rows) ).
-@param corners Output array of detected corners.
-@param flags Various operation flags that can be zero or a combination of the following values:
--   @ref CALIB_CB_ADAPTIVE_THRESH Use adaptive thresholding to convert the image to black
-and white, rather than a fixed threshold level (computed from the average image brightness).
--   @ref CALIB_CB_NORMALIZE_IMAGE Normalize the image gamma with equalizeHist before
-applying fixed or adaptive thresholding.
--   @ref CALIB_CB_FILTER_QUADS Use additional criteria (like contour area, perimeter,
-square-like shape) to filter out false quads extracted at the contour retrieval stage.
--   @ref CALIB_CB_FAST_CHECK Run a fast check on the image that looks for chessboard corners,
-and shortcut the call if none is found. This can drastically speed up the call in the
-degenerate condition when no chessboard is observed.
--   @ref CALIB_CB_PLAIN All other flags are ignored. The input image is taken as is.
-No image processing is done to improve to find the checkerboard. This has the effect of speeding up the
-execution of the function but could lead to not recognizing the checkerboard if the image
-is not previously binarized in the appropriate manner.
-
-The function attempts to determine whether the input image is a view of the chessboard pattern and
-locate the internal chessboard corners. The function returns a non-zero value if all of the corners
-are found and they are placed in a certain order (row by row, left to right in every row).
-Otherwise, if the function fails to find all the corners or reorder them, it returns 0. For example,
-a regular chessboard has 8 x 8 squares and 7 x 7 internal corners, that is, points where the black
-squares touch each other. The detected coordinates are approximate, and to determine their positions
-more accurately, the function calls #cornerSubPix. You also may use the function #cornerSubPix with
-different parameters if returned coordinates are not accurate enough.
-
-Sample usage of detecting and drawing chessboard corners: :
-@code
-    Size patternsize(8,6); //interior number of corners
-    Mat gray = ....; //source image
-    vector<Point2f> corners; //this will be filled by the detected corners
-
-    //CALIB_CB_FAST_CHECK saves a lot of time on images
-    //that do not contain any chessboard corners
-    bool patternfound = findChessboardCorners(gray, patternsize, corners,
-            CALIB_CB_ADAPTIVE_THRESH + CALIB_CB_NORMALIZE_IMAGE
-            + CALIB_CB_FAST_CHECK);
-
-    if(patternfound)
-      cornerSubPix(gray, corners, Size(11, 11), Size(-1, -1),
-        TermCriteria(CV_TERMCRIT_EPS + CV_TERMCRIT_ITER, 30, 0.1));
-
-    drawChessboardCorners(img, patternsize, Mat(corners), patternfound);
-@endcode
-@note The function requires white space (like a square-thick border, the wider the better) around
-the board to make the detection more robust in various environments. Otherwise, if there is no
-border and the background is dark, the outer black squares cannot be segmented properly and so the
-square grouping and ordering algorithm fails.
-
-Use the `generate_pattern.py` Python script (@ref tutorial_camera_calibration_pattern)
-to create the desired checkerboard pattern.
- */
-CV_EXPORTS_W bool findChessboardCorners( InputArray image, Size patternSize, OutputArray corners,
-                                         int flags = CALIB_CB_ADAPTIVE_THRESH + CALIB_CB_NORMALIZE_IMAGE );
-
-/*
-   Checks whether the image contains chessboard of the specific size or not.
-   If yes, nonzero value is returned.
-*/
-CV_EXPORTS_W bool checkChessboard(InputArray img, Size size);
-
-/** @brief Finds the positions of internal corners of the chessboard using a sector based approach.
-
-@param image Source chessboard view. It must be an 8-bit grayscale or color image.
-@param patternSize Number of inner corners per a chessboard row and column
-( patternSize = cv::Size(points_per_row,points_per_colum) = cv::Size(columns,rows) ).
-@param corners Output array of detected corners.
-@param flags Various operation flags that can be zero or a combination of the following values:
--   @ref CALIB_CB_NORMALIZE_IMAGE Normalize the image gamma with equalizeHist before detection.
--   @ref CALIB_CB_EXHAUSTIVE Run an exhaustive search to improve detection rate.
--   @ref CALIB_CB_ACCURACY Up sample input image to improve sub-pixel accuracy due to aliasing effects.
--   @ref CALIB_CB_LARGER The detected pattern is allowed to be larger than patternSize (see description).
--   @ref CALIB_CB_MARKER The detected pattern must have a marker (see description).
-This should be used if an accurate camera calibration is required.
-@param meta Optional output arrray of detected corners (CV_8UC1 and size = cv::Size(columns,rows)).
-Each entry stands for one corner of the pattern and can have one of the following values:
--   0 = no meta data attached
--   1 = left-top corner of a black cell
--   2 = left-top corner of a white cell
--   3 = left-top corner of a black cell with a white marker dot
--   4 = left-top corner of a white cell with a black marker dot (pattern origin in case of markers otherwise first corner)
-
-The function is analog to #findChessboardCorners but uses a localized radon
-transformation approximated by box filters being more robust to all sort of
-noise, faster on larger images and is able to directly return the sub-pixel
-position of the internal chessboard corners. The Method is based on the paper
-@cite duda2018 "Accurate Detection and Localization of Checkerboard Corners for
-Calibration" demonstrating that the returned sub-pixel positions are more
-accurate than the one returned by cornerSubPix allowing a precise camera
-calibration for demanding applications.
-
-In the case, the flags @ref CALIB_CB_LARGER or @ref CALIB_CB_MARKER are given,
-the result can be recovered from the optional meta array. Both flags are
-helpful to use calibration patterns exceeding the field of view of the camera.
-These oversized patterns allow more accurate calibrations as corners can be
-utilized, which are as close as possible to the image borders.  For a
-consistent coordinate system across all images, the optional marker (see image
-below) can be used to move the origin of the board to the location where the
-black circle is located.
-
-@note The function requires a white boarder with roughly the same width as one
-of the checkerboard fields around the whole board to improve the detection in
-various environments. In addition, because of the localized radon
-transformation it is beneficial to use round corners for the field corners
-which are located on the outside of the board. The following figure illustrates
-a sample checkerboard optimized for the detection. However, any other checkerboard
-can be used as well.
-
-Use the `generate_pattern.py` Python script (@ref tutorial_camera_calibration_pattern)
-to create the corresponding checkerboard pattern:
-\image html pics/checkerboard_radon.png width=60%
- */
-CV_EXPORTS_AS(findChessboardCornersSBWithMeta)
-bool findChessboardCornersSB(InputArray image,Size patternSize, OutputArray corners,
-                             int flags,OutputArray meta);
-/** @overload */
-CV_EXPORTS_W inline
-bool findChessboardCornersSB(InputArray image, Size patternSize, OutputArray corners,
-                             int flags = 0)
-{
-    return findChessboardCornersSB(image, patternSize, corners, flags, noArray());
-}
-
-/** @brief Estimates the sharpness of a detected chessboard.
-
-Image sharpness, as well as brightness, are a critical parameter for accuracte
-camera calibration. For accessing these parameters for filtering out
-problematic calibraiton images, this method calculates edge profiles by traveling from
-black to white chessboard cell centers. Based on this, the number of pixels is
-calculated required to transit from black to white. This width of the
-transition area is a good indication of how sharp the chessboard is imaged
-and should be below ~3.0 pixels.
-
-@param image Gray image used to find chessboard corners
-@param patternSize Size of a found chessboard pattern
-@param corners Corners found by #findChessboardCornersSB
-@param rise_distance Rise distance 0.8 means 10% ... 90% of the final signal strength
-@param vertical By default edge responses for horizontal lines are calculated
-@param sharpness Optional output array with a sharpness value for calculated edge responses (see description)
-
-The optional sharpness array is of type CV_32FC1 and has for each calculated
-profile one row with the following five entries:
-* 0 = x coordinate of the underlying edge in the image
-* 1 = y coordinate of the underlying edge in the image
-* 2 = width of the transition area (sharpness)
-* 3 = signal strength in the black cell (min brightness)
-* 4 = signal strength in the white cell (max brightness)
-
-@return Scalar(average sharpness, average min brightness, average max brightness,0)
-*/
-CV_EXPORTS_W Scalar estimateChessboardSharpness(InputArray image, Size patternSize, InputArray corners,
-                                                float rise_distance=0.8F,bool vertical=false,
-                                                OutputArray sharpness=noArray());
-
-
-//! finds subpixel-accurate positions of the chessboard corners
-CV_EXPORTS_W bool find4QuadCornerSubpix( InputArray img, InputOutputArray corners, Size region_size );
-
-/** @brief Renders the detected chessboard corners.
-
-@param image Destination image. It must be an 8-bit color image.
-@param patternSize Number of inner corners per a chessboard row and column
-(patternSize = cv::Size(points_per_row,points_per_column)).
-@param corners Array of detected corners, the output of #findChessboardCorners.
-@param patternWasFound Parameter indicating whether the complete board was found or not. The
-return value of #findChessboardCorners should be passed here.
-
-The function draws individual chessboard corners detected either as red circles if the board was not
-found, or as colored corners connected with lines if the board was found.
- */
-CV_EXPORTS_W void drawChessboardCorners( InputOutputArray image, Size patternSize,
-                                         InputArray corners, bool patternWasFound );
-
-struct CV_EXPORTS_W_SIMPLE CirclesGridFinderParameters
-{
-    CV_WRAP CirclesGridFinderParameters();
-    CV_PROP_RW cv::Size2f densityNeighborhoodSize;
-    CV_PROP_RW float minDensity;
-    CV_PROP_RW int kmeansAttempts;
-    CV_PROP_RW int minDistanceToAddKeypoint;
-    CV_PROP_RW int keypointScale;
-    CV_PROP_RW float minGraphConfidence;
-    CV_PROP_RW float vertexGain;
-    CV_PROP_RW float vertexPenalty;
-    CV_PROP_RW float existingVertexGain;
-    CV_PROP_RW float edgeGain;
-    CV_PROP_RW float edgePenalty;
-    CV_PROP_RW float convexHullFactor;
-    CV_PROP_RW float minRNGEdgeSwitchDist;
-
-    enum GridType
-    {
-      SYMMETRIC_GRID, ASYMMETRIC_GRID
-    };
-    CV_PROP_RW GridType gridType;
-
-    CV_PROP_RW float squareSize; //!< Distance between two adjacent points. Used by CALIB_CB_CLUSTERING.
-    CV_PROP_RW float maxRectifiedDistance; //!< Max deviation from prediction. Used by CALIB_CB_CLUSTERING.
-};
-
-#ifndef DISABLE_OPENCV_3_COMPATIBILITY
-typedef CirclesGridFinderParameters CirclesGridFinderParameters2;
-#endif
-
-/** @brief Finds centers in the grid of circles.
-
-@param image grid view of input circles; it must be an 8-bit grayscale or color image.
-@param patternSize number of circles per row and column
-( patternSize = Size(points_per_row, points_per_colum) ).
-@param centers output array of detected centers.
-@param flags various operation flags that can be one of the following values:
--   @ref CALIB_CB_SYMMETRIC_GRID uses symmetric pattern of circles.
--   @ref CALIB_CB_ASYMMETRIC_GRID uses asymmetric pattern of circles.
--   @ref CALIB_CB_CLUSTERING uses a special algorithm for grid detection. It is more robust to
-perspective distortions but much more sensitive to background clutter.
-@param blobDetector feature detector that finds blobs like dark circles on light background.
-                    If `blobDetector` is NULL then `image` represents Point2f array of candidates.
-@param parameters struct for finding circles in a grid pattern.
-
-The function attempts to determine whether the input image contains a grid of circles. If it is, the
-function locates centers of the circles. The function returns a non-zero value if all of the centers
-have been found and they have been placed in a certain order (row by row, left to right in every
-row). Otherwise, if the function fails to find all the corners or reorder them, it returns 0.
-
-Sample usage of detecting and drawing the centers of circles: :
-@code
-    Size patternsize(7,7); //number of centers
-    Mat gray = ...; //source image
-    vector<Point2f> centers; //this will be filled by the detected centers
-
-    bool patternfound = findCirclesGrid(gray, patternsize, centers);
-
-    drawChessboardCorners(img, patternsize, Mat(centers), patternfound);
-@endcode
-@note The function requires white space (like a square-thick border, the wider the better) around
-the board to make the detection more robust in various environments.
- */
-CV_EXPORTS_W bool findCirclesGrid( InputArray image, Size patternSize,
-                                   OutputArray centers, int flags,
-                                   const Ptr<FeatureDetector> &blobDetector,
-                                   const CirclesGridFinderParameters& parameters);
-
-/** @overload */
-CV_EXPORTS_W bool findCirclesGrid( InputArray image, Size patternSize,
-                                   OutputArray centers, int flags = CALIB_CB_SYMMETRIC_GRID,
-                                   const Ptr<FeatureDetector> &blobDetector = SimpleBlobDetector::create());
 
 /** @brief Finds the camera intrinsic and extrinsic parameters from several views of a calibration
 pattern.
@@ -875,6 +608,7 @@ fx, fy, cx, cy that are optimized further. Otherwise, (cx, cy) is initially set 
 center ( imageSize is used), and focal distances are computed in a least-squares fashion.
 Note, that if intrinsic parameters are known, there is no need to use this function just to
 estimate extrinsic parameters. Use @ref solvePnP instead.
+-   @ref CALIB_DISABLE_SCHUR_COMPLEMENT Disable Schur complement and use the Bouguet calibration engine (@cite Zhang2000, @cite BouguetMCT).
 -   @ref CALIB_FIX_PRINCIPAL_POINT The principal point is not changed during the global
 optimization. It stays at the center or at a different location specified when
  @ref CALIB_USE_INTRINSIC_GUESS is set too.
@@ -909,7 +643,9 @@ supplied distCoeffs matrix is used. Otherwise, it is set to 0.
 @return the overall RMS re-projection error.
 
 The function estimates the intrinsic camera parameters and extrinsic parameters for each of the
-views. The algorithm is based on @cite Zhang2000 and @cite BouguetMCT . The coordinates of 3D object
+views. By default, the optimization follows a sparse bundle adjustment formulation with Schur
+complement; see @cite Triggs2000_bundle_adjustment and @cite Lourakis2009_sba for background. Use
+@ref CALIB_DISABLE_SCHUR_COMPLEMENT to switch to the Bouguet calibration engine. The coordinates of 3D object
 points and their corresponding 2D projections in each view must be specified. That may be achieved
 by using an object with known geometry and easily detectable feature points. Such an object is
 called a calibration rig or calibration pattern, and OpenCV has built-in support for a chessboard as
@@ -931,6 +667,10 @@ The algorithm performs the following steps:
     that is, the total sum of squared distances between the observed feature points imagePoints and
     the projected (using the current estimates for camera parameters and the poses) object points
     objectPoints. See @ref projectPoints for details.
+
+-   In practice, robust acquisition is essential for stable results: use multiple board poses with
+    significant tilt, avoid collecting all views at a single working distance, span the expected
+    working-distance range (a larger board with larger squares can help for longer distances).
 
 @note
     If you use a non-square (i.e. non-N-by-N) grid and @ref findChessboardCorners for calibration,
@@ -955,7 +695,7 @@ CV_EXPORTS_AS(calibrateCameraExtended) double calibrateCamera( InputArrayOfArray
                                      OutputArray stdDeviationsExtrinsics,
                                      OutputArray perViewErrors,
                                      int flags = 0, TermCriteria criteria = TermCriteria(
-                                        TermCriteria::COUNT + TermCriteria::EPS, 100, DBL_EPSILON) );
+                                        TermCriteria::COUNT + TermCriteria::EPS, 500, DBL_EPSILON) );
 
 /** @overload */
 CV_EXPORTS_W double calibrateCamera( InputArrayOfArrays objectPoints,
@@ -963,7 +703,7 @@ CV_EXPORTS_W double calibrateCamera( InputArrayOfArrays objectPoints,
                                      InputOutputArray cameraMatrix, InputOutputArray distCoeffs,
                                      OutputArrayOfArrays rvecs, OutputArrayOfArrays tvecs,
                                      int flags = 0, TermCriteria criteria = TermCriteria(
-                                        TermCriteria::COUNT + TermCriteria::EPS, 100, DBL_EPSILON) );
+                                        TermCriteria::COUNT + TermCriteria::EPS, 500, DBL_EPSILON) );
 
 /** @brief Finds the camera intrinsic and extrinsic parameters from several views of a calibration pattern.
 
@@ -1017,8 +757,8 @@ less precise and less stable in some rare cases.
 @return the overall RMS re-projection error.
 
 The function estimates the intrinsic camera parameters and extrinsic parameters for each of the
-views. The algorithm is based on @cite Zhang2000, @cite BouguetMCT and @cite strobl2011iccv. See
-#calibrateCamera for other detailed explanations.
+views. The object-releasing extension follows @cite strobl2011iccv and uses the same optimization
+core as #calibrateCamera. See #calibrateCamera for other detailed explanations.
 @sa
    calibrateCamera, findChessboardCorners, solvePnP, initCameraMatrix2D, stereoCalibrate, undistort
  */
@@ -1032,7 +772,7 @@ CV_EXPORTS_AS(calibrateCameraROExtended) double calibrateCameraRO( InputArrayOfA
                                      OutputArray stdDeviationsObjPoints,
                                      OutputArray perViewErrors,
                                      int flags = 0, TermCriteria criteria = TermCriteria(
-                                        TermCriteria::COUNT + TermCriteria::EPS, 100, DBL_EPSILON) );
+                                        TermCriteria::COUNT + TermCriteria::EPS, 500, DBL_EPSILON) );
 
 /** @overload */
 CV_EXPORTS_W double calibrateCameraRO( InputArrayOfArrays objectPoints,
@@ -1041,33 +781,7 @@ CV_EXPORTS_W double calibrateCameraRO( InputArrayOfArrays objectPoints,
                                      OutputArrayOfArrays rvecs, OutputArrayOfArrays tvecs,
                                      OutputArray newObjPoints,
                                      int flags = 0, TermCriteria criteria = TermCriteria(
-                                        TermCriteria::COUNT + TermCriteria::EPS, 100, DBL_EPSILON) );
-
-/** @brief Computes useful camera characteristics from the camera intrinsic matrix.
-
-@param cameraMatrix Input camera intrinsic matrix that can be estimated by #calibrateCamera or
-#stereoCalibrate .
-@param imageSize Input image size in pixels.
-@param apertureWidth Physical width in mm of the sensor.
-@param apertureHeight Physical height in mm of the sensor.
-@param fovx Output field of view in degrees along the horizontal sensor axis.
-@param fovy Output field of view in degrees along the vertical sensor axis.
-@param focalLength Focal length of the lens in mm.
-@param principalPoint Principal point in mm.
-@param aspectRatio \f$f_y/f_x\f$
-
-The function computes various useful camera characteristics from the previously estimated camera
-matrix.
-
-@note
-   Do keep in mind that the unity measure 'mm' stands for whatever unit of measure one chooses for
-    the chessboard pitch (it can thus be any value).
- */
-CV_EXPORTS_W void calibrationMatrixValues( InputArray cameraMatrix, Size imageSize,
-                                           double apertureWidth, double apertureHeight,
-                                           CV_OUT double& fovx, CV_OUT double& fovy,
-                                           CV_OUT double& focalLength, CV_OUT Point2d& principalPoint,
-                                           CV_OUT double& aspectRatio );
+                                        TermCriteria::COUNT + TermCriteria::EPS, 500, DBL_EPSILON) );
 
 /** @brief Calibrates a stereo camera set up. This function finds the intrinsic parameters
 for each of the two cameras and the extrinsic parameters between the two cameras.
@@ -1542,7 +1256,7 @@ A minimum of 2 motions with non parallel rotation axes are necessary to determin
 So at least 3 different poses are required, but it is strongly recommended to use many more poses.
 
  */
-CV_EXPORTS void calibrateHandEye( InputArrayOfArrays R_gripper2base, InputArrayOfArrays t_gripper2base,
+CV_EXPORTS_W void calibrateHandEye( InputArrayOfArrays R_gripper2base, InputArrayOfArrays t_gripper2base,
                                     InputArrayOfArrays R_target2cam, InputArrayOfArrays t_target2cam,
                                     OutputArray R_cam2gripper, OutputArray t_cam2gripper,
                                     HandEyeCalibrationMethod method=CALIB_HAND_EYE_TSAI );
@@ -1685,7 +1399,7 @@ This problem is also known as solving the \f$\mathbf{A}\mathbf{X}=\mathbf{Z}\mat
 At least 3 measurements are required (input vectors size must be greater or equal to 3).
 
  */
-CV_EXPORTS void calibrateRobotWorldHandEye( InputArrayOfArrays R_world2cam, InputArrayOfArrays t_world2cam,
+CV_EXPORTS_W void calibrateRobotWorldHandEye( InputArrayOfArrays R_world2cam, InputArrayOfArrays t_world2cam,
                                               InputArrayOfArrays R_base2gripper, InputArrayOfArrays t_base2gripper,
                                               OutputArray R_base2world, OutputArray t_base2world,
                                               OutputArray R_gripper2cam, OutputArray t_gripper2cam,

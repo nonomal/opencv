@@ -45,9 +45,9 @@
 #include "opencv2/core/utility.hpp"
 
 #include "opencv2/core/private.hpp"
-
+#include "opencv2/core/utils/logger.hpp"
 #include "opencv2/calib.hpp"
-#include "opencv2/3d.hpp"
+#include "opencv2/geometry.hpp"
 #include "opencv2/imgproc.hpp"
 #include "opencv2/features.hpp"
 
@@ -133,8 +133,6 @@ static inline bool haveCollinearPoints( const Mat& m, int count )
     }
     return false;
 }
-
-int checkChessboardBinary(const Mat & img, const Size & size);
 
 } // namespace cv
 

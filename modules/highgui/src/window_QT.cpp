@@ -317,8 +317,8 @@ void setWindowTitle_QT(const String& winname, const String& title)
     QMetaObject::invokeMethod(guiMainThread,
         "setWindowTitle",
         autoBlockingConnection(),
-        Q_ARG(QString, QString(winname.c_str())),
-        Q_ARG(QString, QString(title.c_str())));
+        Q_ARG(QString, QString::fromUtf8(winname.c_str())),
+        Q_ARG(QString, QString::fromUtf8(title.c_str())));
 }
 
 
@@ -562,10 +562,10 @@ int namedWindowImpl(const char* name, int flags)
         QMetaObject::invokeMethod(guiMainThread,
         "createWindow",
         Qt::BlockingQueuedConnection,  // block so that we can do useful stuff once we confirm it is created
-        Q_ARG(QString, QString(name)),
+        Q_ARG(QString, QString::fromUtf8(name)),
         Q_ARG(int, flags));
      } else {
-        guiMainThread->createWindow(QString(name), flags);
+        guiMainThread->createWindow(QString::fromUtf8(name), flags);
      }
 
     return 1; //Dummy value - probably should return the result of the invocation.
@@ -702,11 +702,11 @@ void showImageImpl(const char* name, InputArray arr)
         QMetaObject::invokeMethod(guiMainThread,
             "showImage",
              autoBlockingConnection(),
-             Q_ARG(QString, QString(name)),
+             Q_ARG(QString, QString::fromUtf8(name)),
              Q_ARG(cv::InputArray, arr)
         );
      } else {
-        guiMainThread->showImage(QString(name), arr);
+        guiMainThread->showImage(QString::fromUtf8(name), arr);
      }
 }
 
@@ -724,6 +724,53 @@ void setOpenGLDrawCallbackImpl(const char* window_name, CvOpenGlDrawCallback cal
         Q_ARG(QString, QString(window_name)),
         Q_ARG(void*, (void*)callback),
         Q_ARG(void*, userdata));
+}
+
+
+void setOpenGLFreeCallbackImpl(const char* window_name, CvOpenGlFreeCallback callback)
+{
+    if (!guiMainThread)
+        CV_Error( cv::Error::StsNullPtr, "NULL guiReceiver (please create a window)" );
+
+    QMetaObject::invokeMethod(guiMainThread,
+        "setOpenGlFreeCallback",
+        autoBlockingConnection(),
+        Q_ARG(QString, QString(window_name)),
+        Q_ARG(void*, (void*)callback));
+}
+
+
+CvOpenGlDrawCallback getOpenGLDrawCallbackImpl(const char* window_name)
+{
+    if (!guiMainThread)
+        CV_Error( cv::Error::StsNullPtr, "NULL guiReceiver (please create a window)" );
+
+    void* callback;
+
+    QMetaObject::invokeMethod(guiMainThread,
+        "getOpenGlDrawCallback",
+        autoBlockingConnection(),
+        Q_RETURN_ARG(void*, callback),
+        Q_ARG(QString, QString(window_name)));
+
+    return (CvOpenGlDrawCallback)callback;
+}
+
+
+void* getOpenGLUserDataImpl(const char* window_name)
+{
+    if (!guiMainThread)
+        CV_Error( cv::Error::StsNullPtr, "NULL guiReceiver (please create a window)" );
+
+    void* data;
+
+    QMetaObject::invokeMethod(guiMainThread,
+        "getOpenGlUserData",
+        autoBlockingConnection(),
+        Q_RETURN_ARG(void*, data),
+        Q_ARG(QString, QString(window_name)));
+
+    return data;
 }
 
 
@@ -790,14 +837,17 @@ GuiReceiver::GuiReceiver() : bTimeOut(false), nb_windows(0)
 
 void GuiReceiver::isLastWindow()
 {
-    if (--nb_windows <= 0)
+    if (qApp->quitOnLastWindowClosed())
     {
-        delete guiMainThread;//delete global_control_panel too
-        guiMainThread = NULL;
-
-        if (doesExternalQAppExist)
+        if (--nb_windows <= 0)
         {
-            qApp->quit();
+            delete guiMainThread; // delete global_control_panel too
+            guiMainThread = NULL;
+
+            if (doesExternalQAppExist)
+            {
+                qApp->quit();
+            }
         }
     }
 }
@@ -870,7 +920,7 @@ double GuiReceiver::getRatioWindow(QString name)
 
 void GuiReceiver::setRatioWindow(QString name, double arg2)
 {
-    QPointer<CvWindow> w = icvFindWindowByName( name.toLatin1().data() );
+    QPointer<CvWindow> w = icvFindWindowByName(name);
 
     if (!w)
         return;
@@ -920,7 +970,7 @@ void GuiReceiver::setWindowTitle(QString name, QString title)
 
     if (!w)
     {
-        namedWindowImpl(name.toLatin1().data());
+        namedWindowImpl(name.toUtf8().constData());
         w = icvFindWindowByName(name);
     }
 
@@ -970,7 +1020,7 @@ void GuiReceiver::createWindow(QString name, int flags)
         CV_Error(cv::Error::StsNullPtr, "NULL session handler" );
 
     // Check the name in the storage
-    if (icvFindWindowByName(name.toLatin1().data()))
+    if (icvFindWindowByName(name))
     {
         return;
     }
@@ -1011,7 +1061,7 @@ void GuiReceiver::showImage(QString name, _InputArray arr)
 
     if (!w) //as observed in the previous implementation (W32, GTK), create a new window is the pointer returned is null
     {
-        namedWindowImpl(name.toLatin1().data());
+        namedWindowImpl(name.toUtf8().constData());
         w = icvFindWindowByName(name);
     }
 
@@ -1233,6 +1283,34 @@ void GuiReceiver::setOpenGlDrawCallback(QString name, void* callback, void* user
 
     if (w)
         w->setOpenGlDrawCallback((CvOpenGlDrawCallback) callback, userdata);
+}
+
+void GuiReceiver::setOpenGlFreeCallback(QString name, void* callback)
+{
+    QPointer<CvWindow> w = icvFindWindowByName(name);
+
+    if (w)
+        w->setOpenGlFreeCallback((CvOpenGlDrawCallback)callback);
+}
+
+void* GuiReceiver::getOpenGlDrawCallback(QString name)
+{
+    QPointer<CvWindow> w = icvFindWindowByName(name);
+
+    if (!w)
+        return nullptr;
+
+    return reinterpret_cast<void*>(w->getOpenGlDrawCallback());
+}
+
+void* GuiReceiver::getOpenGlUserData(QString name)
+{
+    QPointer<CvWindow> w = icvFindWindowByName(name);
+
+    if (!w)
+        return nullptr;
+
+    return w->getOpenGlUserData();
 }
 
 void GuiReceiver::setOpenGlContext(QString name)
@@ -1887,6 +1965,24 @@ void CvWindow::addSlider2(CvWindow* w, QString name, int* value, int count, CvTr
 void CvWindow::setOpenGlDrawCallback(CvOpenGlDrawCallback callback, void* userdata)
 {
     myView->setOpenGlDrawCallback(callback, userdata);
+}
+
+
+void CvWindow::setOpenGlFreeCallback(CvOpenGlFreeCallback callback)
+{
+    myView->setOpenGlFreeCallback(callback);
+}
+
+
+CvOpenGlDrawCallback CvWindow::getOpenGlDrawCallback()
+{
+    return myView->getOpenGlDrawCallback();
+}
+
+
+void* CvWindow::getOpenGlUserData()
+{
+    return myView->getOpenGlUserData();
 }
 
 
@@ -2584,6 +2680,24 @@ void DefaultViewPort::setOpenGlDrawCallback(CvOpenGlDrawCallback /*callback*/, v
 }
 
 
+void DefaultViewPort::setOpenGlFreeCallback(CvOpenGlFreeCallback /*callback*/)
+{
+    CV_Error(cv::Error::OpenGlNotSupported, "Window doesn't support OpenGL");
+}
+
+
+CvOpenGlDrawCallback DefaultViewPort::getOpenGlDrawCallback()
+{
+    CV_Error(cv::Error::OpenGlNotSupported, "Window doesn't support OpenGL");
+}
+
+
+void* DefaultViewPort::getOpenGlUserData()
+{
+    CV_Error(cv::Error::OpenGlNotSupported, "Window doesn't support OpenGL");
+}
+
+
 void DefaultViewPort::makeCurrentOpenGlContext()
 {
     CV_Error(cv::Error::OpenGlNotSupported, "Window doesn't support OpenGL");
@@ -3198,11 +3312,15 @@ void DefaultViewPort::setSize(QSize /*size_*/)
 OpenGlViewPort::OpenGlViewPort(QWidget* _parent) : OpenCVQtWidgetBase(_parent), OCVViewPort(), size(-1, -1)
 {
     glDrawCallback = 0;
+    glFreeCallback = 0;
     glDrawData = 0;
 }
 
 OpenGlViewPort::~OpenGlViewPort()
 {
+    // Fire the free callback so user GL resources are released (parity with GTK/w32).
+    if (glFreeCallback && glDrawData)
+        glFreeCallback(glDrawData);
 }
 
 QWidget* OpenGlViewPort::getWidget()
@@ -3240,6 +3358,21 @@ void OpenGlViewPort::setOpenGlDrawCallback(CvOpenGlDrawCallback callback, void* 
 {
     glDrawCallback = callback;
     glDrawData = userdata;
+}
+
+void OpenGlViewPort::setOpenGlFreeCallback(CvOpenGlFreeCallback callback)
+{
+    glFreeCallback = callback;
+}
+
+CvOpenGlDrawCallback OpenGlViewPort::getOpenGlDrawCallback()
+{
+    return glDrawCallback;
+}
+
+void* OpenGlViewPort::getOpenGlUserData()
+{
+    return glDrawData;
 }
 
 void OpenGlViewPort::makeCurrentOpenGlContext()

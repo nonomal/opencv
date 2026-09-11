@@ -370,9 +370,7 @@ void UMat::create(Size _sz, int _type, UMatUsageFlags _usageFlags)
 
 void UMat::createSameSize(InputArray arr, int _type, UMatUsageFlags _usageFlags)
 {
-    int arr_size[CV_MAX_DIM];
-    int ndims = arr.sizend(arr_size);
-    create(ndims, arr_size, _type, _usageFlags);
+    create(arr.shape(), _type, _usageFlags);
 }
 
 void UMat::addref()
@@ -681,6 +679,8 @@ void UMat::create(const MatShape& _shape, int _type, UMatUsageFlags _usageFlags)
         release();
     } else {
         create(_shape.dims, _shape.p, _type, _usageFlags);
+        size.layout = _shape.layout;
+        size.C = _shape.C;
     }
 }
 
@@ -715,6 +715,8 @@ void UMat::fit(const std::vector<int>& _shape, int _type, UMatUsageFlags _usageF
 void UMat::fit(const MatShape& _shape, int _type, UMatUsageFlags _usageFlags)
 {
     fit(_shape.dims, _shape.p, _type, _usageFlags);
+    size.layout = _shape.layout;
+    size.C = _shape.C;
 }
 
 void UMat::fit(int _rows, int _cols, int _type, UMatUsageFlags _usageFlags)
@@ -1025,10 +1027,54 @@ UMat UMat::reshape(int new_cn, int new_rows) const
     return hdr;
 }
 
+#ifdef HAVE_OPENCL
+namespace {
+static bool ocl_setDiag(const UMat& d, UMat& m, int len)
+{
+    int cn = d.channels();
+    int depth = d.depth();
+
+    if (depth == CV_64F && !ocl::Device::getDefault().doubleFPConfig())
+        return false;
+
+    String opts = format("-D SET_DIAG -D T1=%s -D cn=%d -D IS_ROW_VECTOR=%d",
+                         ocl::memopTypeToStr(depth),
+                         cn,
+                         (d.rows == 1) ? 1 : 0);
+
+    ocl::Kernel k("setDiag", ocl::core::copyset_oclsrc, opts);
+    if (k.empty())
+        return false;
+
+    k.args(ocl::KernelArg::WriteOnly(m),
+           ocl::KernelArg::ReadOnlyNoSize(d),
+           len);
+
+    size_t globalsize[2] = { (size_t)len, (size_t)len };
+    return k.run(2, globalsize, NULL, false);
+}
+}
+#endif
+
 UMat UMat::diag(const UMat& d, UMatUsageFlags usageFlags)
 {
-    CV_Assert( d.cols == 1 || d.rows == 1 );
+    CV_INSTRUMENT_REGION();
+
+    CV_Assert(d.cols == 1 || d.rows == 1);
     int len = d.rows + d.cols - 1;
+
+#ifdef HAVE_OPENCL
+    if (ocl::useOpenCL())
+    {
+        UMat m(len, len, d.type(), usageFlags);
+        if (ocl_setDiag(d, m, len))
+        {
+            CV_IMPL_ADD(CV_IMPL_OCL);
+            return m;
+        }
+    }
+#endif
+
     UMat m(len, len, d.type(), Scalar(0), usageFlags);
     UMat md = m.diag();
     if( d.cols == 1 )

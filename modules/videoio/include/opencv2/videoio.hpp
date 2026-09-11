@@ -65,9 +65,6 @@
 
 ////////////////////////////////// video io /////////////////////////////////
 
-typedef struct CvCapture CvCapture;
-typedef struct CvVideoWriter CvVideoWriter;
-
 namespace cv
 {
 
@@ -132,6 +129,7 @@ enum VideoCaptureAPIs {
  @sa videoio_flags_others, VideoCapture::get(), VideoCapture::set()
 */
 enum VideoCaptureProperties {
+       CAP_PROP_UNKNOWN        =-1, //!< Returned by VideoCapture::get if the requested property is unknown or unsupported
        CAP_PROP_POS_MSEC       =0, //!< Current position of the video file in milliseconds.
        CAP_PROP_POS_FRAMES     =1, //!< 0-based index of the frame to be decoded/captured next. When the index i is set in RAW mode (CAP_PROP_FORMAT == -1) this will seek to the key frame k, where k <= i.
        CAP_PROP_POS_AVI_RATIO  =2, //!< Relative position of the video file: 0=start of the film, 1=end of the film.
@@ -141,7 +139,7 @@ enum VideoCaptureProperties {
        CAP_PROP_FOURCC         =6, //!< 4-character code of codec. see VideoWriter::fourcc .
        CAP_PROP_FRAME_COUNT    =7, //!< Number of frames in the video file.
        CAP_PROP_FORMAT         =8, //!< Format of the %Mat objects (see Mat::type()) returned by VideoCapture::retrieve().
-                                   //!< Set value -1 to fetch undecoded RAW video streams (as Mat 8UC1).
+                                   //!< Set value -1 to fetch undecoded RAW video streams (as Mat 8UC1). Default is 8UC3. FFmpeg backend supports 8UC4 with alpha, if it's available.
        CAP_PROP_MODE           =9, //!< Backend-specific value indicating the current capture mode.
        CAP_PROP_BRIGHTNESS    =10, //!< Brightness of the image (only for those cameras that support).
        CAP_PROP_CONTRAST      =11, //!< Contrast of the image (only for cameras).
@@ -149,7 +147,7 @@ enum VideoCaptureProperties {
        CAP_PROP_HUE           =13, //!< Hue of the image (only for cameras).
        CAP_PROP_GAIN          =14, //!< Gain of the image (only for those cameras that support).
        CAP_PROP_EXPOSURE      =15, //!< Exposure (only for those cameras that support).
-       CAP_PROP_CONVERT_RGB   =16, //!< Boolean flags indicating whether images should be converted to RGB. <br/>
+       CAP_PROP_CONVERT_RGB   =16, //!< Boolean flags indicating whether images should be converted to BGR. <br/>
                                    //!< *GStreamer note*: The flag is ignored in case if custom pipeline is used. It's user responsibility to interpret pipeline output.
        CAP_PROP_WHITE_BALANCE_BLUE_U =17, //!< Currently unsupported.
        CAP_PROP_RECTIFICATION =18, //!< Rectification flag for stereo cameras (note: only supported by DC1394 v 2.x backend currently).
@@ -206,6 +204,7 @@ enum VideoCaptureProperties {
        CAP_PROP_N_THREADS = 70, //!< (**open-only**) Set the maximum number of threads to use. Use 0 to use as many threads as CPU cores (applicable for FFmpeg back-end only).
        CAP_PROP_PTS = 71, //!<  (read-only) FFmpeg back-end only - presentation timestamp of the most recently read frame using the FPS time base.  e.g. fps = 25, VideoCapture::get(\ref CAP_PROP_PTS) = 3, presentation time = 3/25 seconds.
        CAP_PROP_DTS_DELAY = 72, //!<  (read-only) FFmpeg back-end only - maximum difference between presentation (pts) and decompression timestamps (dts) using FPS time base.  e.g. delay is maximum when frame_num = 0, if true, VideoCapture::get(\ref CAP_PROP_PTS) = 0 and VideoCapture::get(\ref CAP_PROP_DTS_DELAY) = 2, dts = -2.  Non zero values usually imply the stream is encoded using B-frames which are not decoded in presentation order.
+       CAP_PROP_IMAGE_SEQ_START = 73, //!< (**open-only**) Start number for image sequences opened with a printf-style pattern (e.g. `frame_%05d.dpx`). Sets the initial frame number and disables automatic first-frame detection. Applicable to \ref CAP_FFMPEG (passed as the image2 demuxer `start_number`) and \ref CAP_IMAGES backends. Default: not set (automatic detection).
 #ifndef CV_DOXYGEN
        CV__CAP_PROP_LATEST
 #endif
@@ -215,6 +214,7 @@ enum VideoCaptureProperties {
  @sa VideoWriter::get(), VideoWriter::set()
 */
 enum VideoWriterProperties {
+  VIDEOWRITER_PROP_UNKNOWN = -1, //!< Returned by VideoWriter::get if the requested property is unknown or unsupported
   VIDEOWRITER_PROP_QUALITY = 1,    //!< Current quality (0..100%) of the encoded videostream. Can be adjusted dynamically in some codecs.
   VIDEOWRITER_PROP_FRAMEBYTES = 2, //!< (Read-only): Size of just encoded video frame. Note that the encoding order may be different from representation order.
   VIDEOWRITER_PROP_NSTRIPES = 3,   //!< Number of stripes for parallel encoding. -1 for auto detection.
@@ -229,6 +229,8 @@ enum VideoWriterProperties {
   VIDEOWRITER_PROP_KEY_FLAG = 11, //!< Set to non-zero to signal that the following frames are key frames or zero if not, when encapsulating raw video (\ref VIDEOWRITER_PROP_RAW_VIDEO != 0). FFmpeg back-end only.
   VIDEOWRITER_PROP_PTS = 12, //!< Specifies the frame presentation timestamp for each frame using the FPS time base. This property is **only** necessary when encapsulating **externally** encoded video where the decoding order differs from the presentation order, such as in GOP patterns with bi-directional B-frames. The value should be provided by your external encoder and for video sources with fixed frame rates it is equivalent to dividing the current frame's presentation time (\ref CAP_PROP_POS_MSEC) by the frame duration (1000.0 / VideoCapture::get(\ref CAP_PROP_FPS)). It can be queried from the resulting encapsulated video file using VideoCapture::get(\ref CAP_PROP_PTS). FFmpeg back-end only.
   VIDEOWRITER_PROP_DTS_DELAY = 13, //!< Specifies the maximum difference between presentation (pts) and decompression timestamps (dts) using the FPS time base. This property is necessary **only** when encapsulating **externally** encoded video where the decoding order differs from the presentation order, such as in GOP patterns with bi-directional B-frames. The value should be calculated based on the specific GOP pattern used during encoding. For example, in a GOP with presentation order IBP and decoding order IPB, this value would be 1, as the B-frame is the second frame presented but the third to be decoded. It can be queried from the resulting encapsulated video file using VideoCapture::get(\ref CAP_PROP_DTS_DELAY). Non-zero values usually imply the stream is encoded using B-frames. FFmpeg back-end only.
+  VIDEOWRITER_PROP_COLOR_SPACE = 14, //!< (**open-only**) GStreamer backend only. Pixel format for the encoding profile. Default is "I420". Other values: "NV12", "BGRx". See GStreamer raw video formats for more options.
+  VIDEOWRITER_PROP_ENABLE_ALPHA = 15, //!< (**open-only**) FFmpeg backend only. Defines that input frames contain alpha channel.
 #ifndef CV_DOXYGEN
   CV__VIDEOWRITER_PROP_LATEST
 #endif
@@ -610,9 +612,19 @@ enum { CAP_PROP_IOS_DEVICE_FOCUS        = 9001,
 enum { CAP_PROP_GIGA_FRAME_OFFSET_X   = 10001,
        CAP_PROP_GIGA_FRAME_OFFSET_Y   = 10002,
        CAP_PROP_GIGA_FRAME_WIDTH_MAX  = 10003,
-       CAP_PROP_GIGA_FRAME_HEIGH_MAX  = 10004,
+       CAP_PROP_GIGA_FRAME_HEIGHT_MAX  = 10004,
+// Typo in pre-5.x sources. Remain for source compatibility
+#if CV_VERSION_MAJOR <= 4
+       CAP_PROP_GIGA_FRAME_HEIGH_MAX = CAP_PROP_GIGA_FRAME_HEIGHT_MAX, //!< @deprecated
+#endif
+
        CAP_PROP_GIGA_FRAME_SENS_WIDTH = 10005,
-       CAP_PROP_GIGA_FRAME_SENS_HEIGH = 10006
+       CAP_PROP_GIGA_FRAME_SENS_HEIGHT = 10006
+// Typo in pre-5.x sources. Remain for source compatibility
+#if CV_VERSION_MAJOR <= 4
+       ,
+       CAP_PROP_GIGA_FRAME_SENS_HEIGH = CAP_PROP_GIGA_FRAME_SENS_HEIGHT //!< @deprecated
+#endif
      };
 
 //! @} Smartek
@@ -989,7 +1001,7 @@ public:
 
     @param propId Property identifier from cv::VideoCaptureProperties (eg. cv::CAP_PROP_POS_MSEC, cv::CAP_PROP_POS_FRAMES, ...)
     or one from @ref videoio_flags_others
-    @return Value for the specified property. Value 0 is returned when querying a property that is
+    @return Value for the specified property. Value cv::CAP_PROP_UNKNOWN is returned when querying a property that is
     not supported by the backend used by the VideoCapture instance.
 
     @note Reading / writing properties involves many layers. Some unexpected result might happens
@@ -1041,7 +1053,6 @@ public:
             int64 timeoutNs = 0);
 
 protected:
-    Ptr<CvCapture> cap;
     Ptr<IVideoCapture> icap;
     bool throwOnFail;
 
@@ -1181,8 +1192,13 @@ public:
 
     The function/method writes the specified image to video file. It must have the same size as has
     been specified when opening the video writer.
+
+    @return `true` if the frame was written successfully by the underlying backend,
+    `false` otherwise (for example, on network errors when streaming, encoder failures,
+    or unsupported input frames). Backends that do not surface per-frame status from
+    their native API report `true` on best-effort success.
      */
-    CV_WRAP virtual void write(InputArray image);
+    CV_WRAP virtual bool write(InputArray image);
 
     /** @brief Sets a property in the VideoWriter.
 
@@ -1220,17 +1236,11 @@ public:
     CV_WRAP String getBackendName() const;
 
 protected:
-    Ptr<CvVideoWriter> writer;
     Ptr<IVideoWriter> iwriter;
 
     static Ptr<IVideoWriter> create(const String& filename, int fourcc, double fps,
                                     Size frameSize, bool isColor = true);
 };
-
-//! @cond IGNORED
-template<> struct DefaultDeleter<CvCapture>{ CV_EXPORTS void operator ()(CvCapture* obj) const; };
-template<> struct DefaultDeleter<CvVideoWriter>{ CV_EXPORTS void operator ()(CvVideoWriter* obj) const; };
-//! @endcond IGNORED
 
 //! @} videoio
 

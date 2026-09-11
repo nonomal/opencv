@@ -13,6 +13,15 @@ const int ARITHM_MAX_CHANNELS = 4;
 const int ARITHM_MAX_NDIMS = 4;
 const int ARITHM_MAX_SIZE_LOG = 10;
 
+// fp8 (E4M3) is excluded from the tolerance-checked element-wise pool: its 3-bit
+// mantissa can't meet these tests' error bounds and out-of-range inputs overflow to
+// NaN. fp8 conversion/arithmetic is covered directly in test_fp8.cpp.
+static const _OutputArray::DepthMask DEPTH_MASK_ALL_NO_FP8 =
+    _OutputArray::DepthMask(_OutputArray::DEPTH_MASK_ALL &
+        ~((1 << CV_8F_E4M3FN) | (1 << CV_8F_E4M3FNUZ)));
+static const _OutputArray::DepthMask DEPTH_MASK_ALL_BUT_8S_NO_FP8 =
+    _OutputArray::DepthMask(DEPTH_MASK_ALL_NO_FP8 & ~_OutputArray::DEPTH_MASK_8S);
+
 struct BaseElemWiseOp
 {
     enum
@@ -41,7 +50,7 @@ struct BaseElemWiseOp
 
     virtual int getRandomType(RNG& rng)
     {
-        return cvtest::randomType(rng, _OutputArray::DEPTH_MASK_ALL_BUT_8S, 1,
+        return cvtest::randomType(rng, DEPTH_MASK_ALL_BUT_8S_NO_FP8, 1,
                                   ninputs > 1 ? ARITHM_MAX_CHANNELS : 4);
     }
 
@@ -895,8 +904,8 @@ struct ConvertScaleOp : public BaseElemWiseOp
     }
     int getRandomType(RNG& rng)
     {
-        int srctype = cvtest::randomType(rng, _OutputArray::DEPTH_MASK_ALL, 1, ARITHM_MAX_CHANNELS);
-        ddepth = cvtest::randomType(rng, _OutputArray::DEPTH_MASK_ALL, 1, 1);
+        int srctype = cvtest::randomType(rng, DEPTH_MASK_ALL_NO_FP8, 1, ARITHM_MAX_CHANNELS);
+        ddepth = cvtest::randomType(rng, DEPTH_MASK_ALL_NO_FP8, 1, 1);
         return srctype;
     }
     double getMaxErr(int)
@@ -994,7 +1003,7 @@ struct ConvertScaleAbsOp : public BaseElemWiseOp
     }
     int getRandomType(RNG& rng)
     {
-        return cvtest::randomType(rng, _OutputArray::DEPTH_MASK_ALL, 1,
+        return cvtest::randomType(rng, DEPTH_MASK_ALL_NO_FP8, 1,
             ninputs > 1 ? ARITHM_MAX_CHANNELS : 4);
     }
     double getMaxErr(int)
@@ -1035,6 +1044,14 @@ static void flip(const Mat& src, Mat& dst, int flipcode)
                     dptr[j + k] = sptr[width - j - esz + k];
         }
     }
+}
+
+static void flip_inplace(Mat& dst, int flipcode)
+{
+    Mat m;
+    m.create(dst.size(), dst.type());
+    reference::flip(dst, m, flipcode);
+    memcpy(dst.ptr<uchar>(), m.ptr<uchar>(), dst.total() * dst.elemSize());
 }
 
 static void rotate(const Mat& src, Mat& dst, int rotateMode)
@@ -1091,6 +1108,36 @@ struct FlipOp : public BaseElemWiseOp
     void refop(const vector<Mat>& src, Mat& dst, const Mat&)
     {
         reference::flip(src[0], dst, flipcode);
+    }
+    void generateScalars(int, RNG& rng)
+    {
+        flipcode = rng.uniform(0, 3) - 1;
+    }
+    double getMaxErr(int)
+    {
+        return 0;
+    }
+    int flipcode;
+};
+
+struct FlipInplaceOp : public BaseElemWiseOp
+{
+    FlipInplaceOp() : BaseElemWiseOp(1, FIX_ALPHA+FIX_BETA+FIX_GAMMA, 1, 1, Scalar::all(0)) { flipcode = 0; }
+    void getRandomSize(RNG& rng, vector<int>& size)
+    {
+        cvtest::randomSize(rng, 2, 2, ARITHM_MAX_SIZE_LOG, size);
+    }
+    void op(const vector<Mat>& src, Mat& dst, const Mat&)
+    {
+        dst.create(src[0].size(), src[0].type());
+        memcpy(dst.ptr<uchar>(), src[0].ptr<uchar>(), src[0].total() * src[0].elemSize());
+        cv::flip(dst, dst, flipcode);
+    }
+    void refop(const vector<Mat>& src, Mat& dst, const Mat&)
+    {
+        dst.create(src[0].size(), src[0].type());
+        memcpy(dst.ptr<uchar>(), src[0].ptr<uchar>(), src[0].total() * src[0].elemSize());
+        reference::flip_inplace(dst, flipcode);
     }
     void generateScalars(int, RNG& rng)
     {
@@ -1789,6 +1836,7 @@ INSTANTIATE_TEST_CASE_P(Core_InRange, ElemWiseTest, ::testing::Values(ElemWiseOp
 INSTANTIATE_TEST_CASE_P(Core_FiniteMask, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new FiniteMaskOp)));
 
 INSTANTIATE_TEST_CASE_P(Core_Flip, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new FlipOp)));
+INSTANTIATE_TEST_CASE_P(Core_FlipInplace, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new FlipInplaceOp)));
 INSTANTIATE_TEST_CASE_P(Core_Rotate, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new RotateOp)));
 INSTANTIATE_TEST_CASE_P(Core_Transpose, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new TransposeOp)));
 INSTANTIATE_TEST_CASE_P(Core_SetIdentity, ElemWiseTest, ::testing::Values(ElemWiseOpPtr(new SetIdentityOp)));
@@ -2466,10 +2514,14 @@ TEST(Compare, empty)
 
 TEST(Compare, regression_8999)
 {
+    // Issue #8999 predates broadcasting element-wise ops: comparing a 4x1 array against a 1x1 operand
+    // used to throw (both look like a Scalar). It now broadcasts the 1x1 operand across the 4x1 array.
     Mat_<double> A(4,1); A << 1, 3, 2, 4;
     Mat_<double> B(1,1); B << 2;
     Mat C;
-    EXPECT_THROW(cv::compare(A, B, C, CMP_LT), cv::Exception);
+    cv::compare(A, B, C, CMP_LT);
+    Mat expected = (Mat_<uchar>(4,1) << 255, 0, 0, 0);   // A < 2
+    EXPECT_EQ(0, cvtest::norm(C, expected, NORM_INF));
 }
 
 TEST(Compare, regression_16F_do_not_crash)
@@ -2777,6 +2829,56 @@ TEST(BroadcastTo, basic) {
         broadcast(_src, shape, dst);
         fn_verify(ref, dst);
     }
+
+    {
+        std::vector<int> shape{1, 0};
+        std::vector<int> data;
+        Mat zero_src(static_cast<int>(shape.size()), shape.data(), CV_32FC1, data.data());
+
+        std::vector<int> target_shape{3, 0};
+        Mat dst;
+
+        broadcast(zero_src, target_shape, dst);
+
+        EXPECT_EQ(dst.dims, 2);
+        EXPECT_EQ(dst.size[0], 3);
+        EXPECT_EQ(dst.size[1], 0);
+        EXPECT_EQ(dst.total(), 0u);
+    }
+
+}
+
+TEST(BroadcastTo, regression_dst_dp_zero_when_last_dim_is_one)
+{
+    std::vector<int> shape_src{10, 1, 1};
+    std::vector<float> data_src(10);
+    for (int i = 0; i < 10; ++i)
+    {
+        data_src[i] = static_cast<float>(i + 1);
+    }
+    Mat src(static_cast<int>(shape_src.size()), shape_src.data(), CV_32FC1, data_src.data());
+
+    std::vector<int> shape_dst{10, 5, 1};
+    Mat dst;
+
+    // Regression for broadcast() path where the innermost destination dimension is 1
+    // and flattened destination step can legitimately be 0.
+    ASSERT_NO_THROW(broadcast(src, shape_dst, dst));
+
+    EXPECT_EQ(dst.dims, 3);
+    EXPECT_EQ(dst.size[0], 10);
+    EXPECT_EQ(dst.size[1], 5);
+    EXPECT_EQ(dst.size[2], 1);
+    EXPECT_EQ(dst.type(), CV_32FC1);
+
+    for (int i = 0; i < shape_dst[0]; ++i)
+    {
+        for (int j = 0; j < shape_dst[1]; ++j)
+        {
+            int idx[] = {i, j, 0};
+            EXPECT_FLOAT_EQ(dst.at<float>(idx), static_cast<float>(i + 1));
+        }
+    }
 }
 
 TEST(Core_minMaxIdx, regression_9207_2)
@@ -2921,6 +3023,14 @@ TEST(Core_Norm, NORM_L2_8UC4)
     cv::Mat4b b = cv::Mat4b::zeros(kSide, kSide);
     const double kNorm = 2.*kSide*255.;
     EXPECT_EQ(kNorm, cv::norm(a, b, NORM_L2));
+}
+
+TEST(Core_Norm, NORM_L2SQR_16SC4_large)
+{
+    const int sizes[] = {1, 116, 40};
+    Mat src(3, sizes, CV_16SC4, Scalar::all(16384));
+    const double expected = static_cast<double>(src.total()) * src.channels() * 16384.0 * 16384.0;
+    EXPECT_EQ(expected, cv::norm(src, NORM_L2SQR));
 }
 
 TEST(Core_ConvertTo, regression_12121)
@@ -3513,6 +3623,83 @@ INSTANTIATE_TEST_CASE_P(
     testing::Values(CV_16BF, CV_Bool, CV_64U, CV_64S, CV_32U)
 );
 
+typedef testing::TestWithParam<perf::MatDepth> NonZeroAccuracyNewTypes;
+
+TEST_P(NonZeroAccuracyNewTypes, accuracy)
+{
+    const int depth = GetParam();
+    const Size sz(123, 71);
+    cv::Mat src = cv::Mat::zeros(sz, CV_MAKETYPE(depth, 1));
+
+    std::vector<Point> expected_pts;
+    const int total = sz.area();
+    const int approx_nz = std::max(1, total / 17);
+    std::vector<uchar> is_nz(total, 0);
+    for (int n = 0; n < approx_nz; )
+    {
+        int idx = theRNG().uniform(0, total);
+        if (is_nz[idx])
+            continue;
+        is_nz[idx] = 1;
+        ++n;
+    }
+
+    auto setNonZero = [&](int y, int x)
+    {
+        switch(depth)
+        {
+            case CV_Bool: src.at<uchar>(y, x) = 1; break;
+            case CV_16BF: src.at<uint16_t>(y, x) = 0x3F80; /* bf16(1.0f) */ break;
+            case CV_32U:  src.at<uint32_t>(y, x) = 7u; break;
+            case CV_64U:  src.at<uint64_t>(y, x) = 7ULL; break;
+            case CV_64S:  src.at<int64_t>(y, x)  = -7LL; break;
+            default: FAIL() << "Unexpected depth " << depth;
+        }
+    };
+
+    int nz_ref = 0;
+    for (int y = 0; y < sz.height; ++y)
+        for (int x = 0; x < sz.width; ++x)
+            if (is_nz[y*sz.width + x])
+            {
+                setNonZero(y, x);
+                expected_pts.emplace_back(x, y);
+                ++nz_ref;
+            }
+
+    EXPECT_EQ(nz_ref, cv::countNonZero(src));
+    EXPECT_EQ(nz_ref > 0, cv::hasNonZero(src));
+    cv::Mat zeros = cv::Mat::zeros(sz, src.type());
+    EXPECT_FALSE(cv::hasNonZero(zeros));
+
+    std::vector<Point> pts;
+    cv::findNonZero(src, pts);
+    ASSERT_EQ(expected_pts.size(), pts.size());
+    for (size_t i = 0; i < pts.size(); ++i)
+    {
+        EXPECT_EQ(expected_pts[i].x, pts[i].x) << "i=" << i;
+        EXPECT_EQ(expected_pts[i].y, pts[i].y) << "i=" << i;
+    }
+}
+
+TEST(NonZeroAccuracyNewTypes_BF16, negative_zero_is_zero)
+{
+    const Size sz(64, 32);
+    cv::Mat src(sz, CV_16BFC1);
+    src.setTo(cv::Scalar::all(-0.0));
+    EXPECT_EQ(0, cv::countNonZero(src));
+    EXPECT_FALSE(cv::hasNonZero(src));
+    std::vector<Point> pts;
+    cv::findNonZero(src, pts);
+    EXPECT_TRUE(pts.empty());
+}
+
+INSTANTIATE_TEST_CASE_P(
+    NonZeroAcc,
+    NonZeroAccuracyNewTypes,
+    testing::Values(CV_16BF, CV_Bool, CV_64U, CV_64S, CV_32U)
+);
+
 ///////////////////////////////////////////////////////////////////////////////////
 typedef testing::TestWithParam<perf::MatDepth> MinMaxSupportedMatDepth;
 
@@ -3537,6 +3724,212 @@ INSTANTIATE_TEST_CASE_P(
     MinMaxLoc,
     MinMaxSupportedMatDepth,
     testing::Values(perf::MatDepth(CV_16F), CV_16BF, CV_Bool, CV_64U, CV_64S, CV_32U)
+);
+
+typedef testing::TestWithParam<perf::MatDepth> MinMaxAccuracyNewTypes;
+
+TEST_P(MinMaxAccuracyNewTypes, accuracy)
+{
+    const int depth = GetParam();
+    const Size sz(173, 91);
+
+    double fill_val = 0, min_val = 0, max_val = 0;
+    Point min_pos(11, 7), max_pos(150, 80);
+    ASSERT_TRUE(min_pos != max_pos);
+
+    switch (depth)
+    {
+        case CV_Bool: fill_val = 0; min_val = 0; max_val = 1; break;
+        case CV_16BF: fill_val = 1.5; min_val = -123.5; max_val = 4096.0; break;
+        case CV_32U:  fill_val = 1000.0; min_val = 7.0;
+                      max_val = (double)std::numeric_limits<uint32_t>::max() - 1.0; break;
+        case CV_64U:  fill_val = 1e15; min_val = 0.0; max_val = 1e18; break;
+        case CV_64S:  fill_val = 0.0; min_val = -1e17; max_val = 1e17; break;
+        default: FAIL() << "Unexpected depth " << depth;
+    }
+
+    cv::Mat src(sz, CV_MAKETYPE(depth, 1));
+    if (depth == CV_Bool) src.setTo(cv::Scalar::all(0));
+    else src.setTo(cv::Scalar::all(fill_val));
+
+    auto put = [&](Point p, double v)
+    {
+        switch(depth)
+        {
+            case CV_Bool: src.at<uchar>(p.y, p.x)    = (uchar)v; break;
+            case CV_16BF: src.at<cv::bfloat>(p.y, p.x) = cv::bfloat((float)v); break;
+            case CV_32U:  src.at<uint32_t>(p.y, p.x) = (uint32_t)v; break;
+            case CV_64U:  src.at<uint64_t>(p.y, p.x) = (uint64_t)v; break;
+            case CV_64S:  src.at<int64_t>(p.y, p.x)  = (int64_t)v; break;
+            default: FAIL() << "Unexpected depth " << depth;
+        }
+    };
+    put(min_pos, min_val);
+    put(max_pos, max_val);
+
+    // minMaxLoc: 2D-only, returns Points.
+    {
+        double minV = 0, maxV = 0;
+        Point minLoc(-1, -1), maxLoc(-1, -1);
+        cv::minMaxLoc(src, &minV, &maxV, &minLoc, &maxLoc);
+        EXPECT_NEAR(min_val, minV, 1e-5 * std::max(1.0, std::fabs(min_val)));
+        EXPECT_NEAR(max_val, maxV, 1e-5 * std::max(1.0, std::fabs(max_val)));
+        if (depth != CV_Bool)
+        {
+            EXPECT_EQ(min_pos, minLoc);
+        }
+        EXPECT_EQ(max_pos, maxLoc);
+    }
+
+    // minMaxIdx: same data, idx[] form (row, col).
+    {
+        double minV = 0, maxV = 0;
+        int minIdx[2] = {-1, -1}, maxIdx[2] = {-1, -1};
+        cv::minMaxIdx(src, &minV, &maxV, minIdx, maxIdx);
+        EXPECT_NEAR(min_val, minV, 1e-5 * std::max(1.0, std::fabs(min_val)));
+        EXPECT_NEAR(max_val, maxV, 1e-5 * std::max(1.0, std::fabs(max_val)));
+        if (depth != CV_Bool)
+        {
+            EXPECT_EQ(min_pos.y, minIdx[0]);
+            EXPECT_EQ(min_pos.x, minIdx[1]);
+        }
+        EXPECT_EQ(max_pos.y, maxIdx[0]);
+        EXPECT_EQ(max_pos.x, maxIdx[1]);
+    }
+}
+
+// Mask-aware accuracy: extreme values outside the mask must be ignored.
+TEST_P(MinMaxAccuracyNewTypes, accuracy_with_mask)
+{
+    const int depth = GetParam();
+    const Size sz(64, 48);
+    cv::Mat src(sz, CV_MAKETYPE(depth, 1));
+    cv::Mat mask = cv::Mat::zeros(sz, CV_8UC1);
+
+    double fill_val = 0, masked_min = 0, masked_max = 0, outlier_min = 0, outlier_max = 0;
+    Point min_pos(5, 5), max_pos(40, 30), outlier_min_pos(1, 1), outlier_max_pos(60, 45);
+
+    switch (depth)
+    {
+        case CV_Bool:
+            fill_val = 0; masked_min = 0; masked_max = 1;
+            outlier_min = 0; outlier_max = 1; break;
+        case CV_16BF:
+            fill_val = 1.0; masked_min = -10.0; masked_max = 10.0;
+            outlier_min = -1000.0; outlier_max = 1000.0; break;
+        case CV_32U:
+            fill_val = 100; masked_min = 1; masked_max = 1000;
+            outlier_min = 0; outlier_max = (double)std::numeric_limits<uint32_t>::max(); break;
+        case CV_64U:
+            fill_val = 1e10; masked_min = 1.0; masked_max = 1e12;
+            outlier_min = 0.0; outlier_max = 1e18; break;
+        case CV_64S:
+            fill_val = 0.0; masked_min = -1e10; masked_max = 1e10;
+            outlier_min = -1e17; outlier_max = 1e17; break;
+        default: FAIL() << "Unexpected depth " << depth;
+    }
+
+    src.setTo(cv::Scalar::all(fill_val));
+
+    auto put = [&](Point p, double v)
+    {
+        switch(depth)
+        {
+            case CV_Bool: src.at<uchar>(p.y, p.x)    = (uchar)v; break;
+            case CV_16BF: src.at<cv::bfloat>(p.y, p.x) = cv::bfloat((float)v); break;
+            case CV_32U:  src.at<uint32_t>(p.y, p.x) = (uint32_t)v; break;
+            case CV_64U:  src.at<uint64_t>(p.y, p.x) = (uint64_t)v; break;
+            case CV_64S:  src.at<int64_t>(p.y, p.x)  = (int64_t)v; break;
+            default: FAIL() << "Unexpected depth " << depth;
+        }
+    };
+    put(min_pos, masked_min);
+    put(max_pos, masked_max);
+    put(outlier_min_pos, outlier_min);
+    put(outlier_max_pos, outlier_max);
+
+    mask.setTo(255);
+    mask.at<uchar>(outlier_min_pos.y, outlier_min_pos.x) = 0;
+    mask.at<uchar>(outlier_max_pos.y, outlier_max_pos.x) = 0;
+
+    double minV = 0, maxV = 0;
+    int minIdx[2] = {-1, -1}, maxIdx[2] = {-1, -1};
+    cv::minMaxIdx(src, &minV, &maxV, minIdx, maxIdx, mask);
+
+    EXPECT_NEAR(masked_min, minV, 1e-5 * std::max(1.0, std::fabs(masked_min)));
+    EXPECT_NEAR(masked_max, maxV, 1e-5 * std::max(1.0, std::fabs(masked_max)));
+
+    if (depth != CV_Bool)
+    {
+        EXPECT_EQ(min_pos.y, minIdx[0]);
+        EXPECT_EQ(min_pos.x, minIdx[1]);
+        EXPECT_EQ(max_pos.y, maxIdx[0]);
+        EXPECT_EQ(max_pos.x, maxIdx[1]);
+    }
+}
+
+INSTANTIATE_TEST_CASE_P(
+    MinMaxAcc,
+    MinMaxAccuracyNewTypes,
+    testing::Values(CV_16BF, CV_Bool, CV_64U, CV_64S, CV_32U)
+);
+
+typedef testing::TestWithParam<perf::MatDepth> LUTAccuracyNewDstTypes;
+
+TEST_P(LUTAccuracyNewDstTypes, accuracy)
+{
+    const int dst_depth = GetParam();
+    cv::Mat lut(1, 256, CV_MAKETYPE(dst_depth, 1));
+    for (int i = 0; i < 256; ++i)
+    {
+        switch (dst_depth)
+        {
+            case CV_Bool: lut.at<uchar>(0, i)    = (uchar)(i & 1); break;
+            case CV_16BF: lut.at<cv::bfloat>(0, i) = cv::bfloat((float)(i - 128) * 0.5f); break;
+            case CV_32U:  lut.at<uint32_t>(0, i) = (uint32_t)i * 16777619u; break;
+            case CV_64U:  lut.at<uint64_t>(0, i) = ((uint64_t)i << 56) | (uint64_t)i; break;
+            case CV_64S:  lut.at<int64_t>(0, i)  = ((int64_t)i - 128) * 1000000000LL; break;
+            default: FAIL() << "Unexpected depth " << dst_depth;
+        }
+    }
+
+    cv::Mat src(16, 16, CV_8UC1);
+    for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 16; ++x)
+            src.at<uchar>(y, x) = (uchar)(y * 16 + x);
+
+    cv::Mat dst;
+    cv::LUT(src, lut, dst);
+    ASSERT_EQ(dst.size(), src.size());
+    ASSERT_EQ(dst.type(), CV_MAKETYPE(dst_depth, 1));
+
+    for (int y = 0; y < 16; ++y)
+    {
+        for (int x = 0; x < 16; ++x)
+        {
+            int idx = src.at<uchar>(y, x);
+            switch (dst_depth)
+            {
+                case CV_Bool:
+                    EXPECT_EQ(lut.at<uchar>(0, idx), dst.at<uchar>(y, x)); break;
+                case CV_16BF:
+                    EXPECT_EQ(lut.at<uint16_t>(0, idx), dst.at<uint16_t>(y, x)); break;
+                case CV_32U:
+                    EXPECT_EQ(lut.at<uint32_t>(0, idx), dst.at<uint32_t>(y, x)); break;
+                case CV_64U:
+                    EXPECT_EQ(lut.at<uint64_t>(0, idx), dst.at<uint64_t>(y, x)); break;
+                case CV_64S:
+                    EXPECT_EQ(lut.at<int64_t>(0, idx),  dst.at<int64_t>(y, x)); break;
+                default: FAIL() << "Unexpected depth " << dst_depth;
+            }
+        }
+    }
+}
+
+INSTANTIATE_TEST_CASE_P(
+    LUTAcc,
+    LUTAccuracyNewDstTypes,
+    testing::Values(CV_16BF, CV_Bool, CV_64U, CV_64S, CV_32U)
 );
 
 CV_ENUM(LutIdxType, CV_8U, CV_8S, CV_16U, CV_16S)
@@ -3886,5 +4279,76 @@ TEST_P(Core_MaskTypeTest, MeanStdDev)
 
 INSTANTIATE_TEST_CASE_P(/**/, Core_MaskTypeTest, MaskType::all());
 
+// Still fails in 5.x: https://github.com/opencv/opencv/issues/28557
+TEST(Core_Arithm, DISABLED_mul_overflow_28557)
+{
+    uint16_t data[] = {5000, 60000, 5000, 60000, 5000, 60000};
+    cv::Mat m(1, 6, CV_16U, data);
+    cv::Mat res = m.mul(m);
+
+    for (int i = 0; i < 6; i++)
+    {
+        EXPECT_EQ(65535, res.at<uint16_t>(0, i));
+    }
+}
+
+
+// https://github.com/opencv/opencv/issues/29880
+typedef testing::TestWithParam< tuple<perf::MatDepth, int> > Core_AddWeighted_regression29880;
+
+TEST_P(Core_AddWeighted_regression29880, dtype)
+{
+    const int sdepth = get<0>(GetParam());
+    const int dtype = get<1>(GetParam());
+    const int ddepth = dtype < 0 ? sdepth : dtype;
+
+    cv::Mat src(4, 4, CV_MAKETYPE(sdepth, 1), cv::Scalar::all(1)), dst, dst64f;
+    cv::addWeighted(src, 2.0, src, 3.0, 4.0, dst, dtype);
+    ASSERT_EQ(ddepth, dst.depth());
+    dst.convertTo(dst64f, CV_64F);
+    EXPECT_EQ(0, cv::countNonZero(dst64f != (ddepth == CV_Bool ? 1.0 : 9.0)));
+}
+
+// sdepth excludes CV_Bool: addWeighted now rejects Bool sources outright, see below.
+INSTANTIATE_TEST_CASE_P(/**/, Core_AddWeighted_regression29880, testing::Combine(
+    testing::Values(CV_8U, CV_8S, CV_16U, CV_16S, CV_16F, CV_16BF, CV_32F),
+    testing::Values(-1, CV_8U, CV_32F, CV_64F, CV_Bool)));
+
+// CV_Bool sources are disabled per https://github.com/opencv/opencv/pull/29883#issuecomment-5569942015:
+// the user should cast explicitly instead.
+typedef testing::TestWithParam<int> Core_AddWeighted_boolInput_29880;
+
+TEST_P(Core_AddWeighted_boolInput_29880, throws)
+{
+    const int dtype = GetParam();
+    cv::Mat src(4, 4, CV_MAKETYPE(CV_Bool, 1), cv::Scalar::all(1)), dst;
+    ASSERT_THROW(cv::addWeighted(src, 2.0, src, 3.0, 4.0, dst, dtype), cv::Exception);
+}
+
+INSTANTIATE_TEST_CASE_P(/**/, Core_AddWeighted_boolInput_29880,
+    testing::Values(-1, CV_8U, CV_32F, CV_64F, CV_Bool));
+
+// The dtype=CV_64F path computes at fp32 (addWeighted's native work precision for 8U..32F sources)
+// and casts the RESULT up to fp64, rather than widening the sources to fp64 before the op; the two
+// give different bit patterns for a generic alpha, so this pins down which one actually runs.
+TEST(Core_Arithm, addWeighted_fp64_uses_fp32_intermediate_29880)
+{
+    const float srcVal = 100.f, alpha = 1.f/3, beta = 0.f, gamma = 0.f;
+    cv::Mat src(1, 1, CV_8UC1, cv::Scalar(srcVal)), dst;
+    cv::addWeighted(src, (double)alpha, src, (double)beta, (double)gamma, dst, CV_64F);
+
+    const double fp32Then64 = (double)cv::saturate_cast<float>(srcVal*alpha + srcVal*beta + gamma);
+    const double fp64Only = (double)srcVal*(double)alpha + (double)srcVal*(double)beta + (double)gamma;
+    ASSERT_NE(fp32Then64, fp64Only) << "chosen alpha does not distinguish the two code paths";
+    EXPECT_EQ(fp32Then64, dst.at<double>(0, 0));
+}
+
+
+TEST(Core_Arithm, min_empty)
+{
+  cv::Mat A, B, C;
+  cv::max(A,B,C);
+  EXPECT_TRUE(C.empty());
+}
 
 }} // namespace

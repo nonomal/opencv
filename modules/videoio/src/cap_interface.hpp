@@ -190,7 +190,7 @@ class IVideoCapture
 {
 public:
     virtual ~IVideoCapture() {}
-    virtual double getProperty(int) const { return 0; }
+    virtual double getProperty(int) const { return CAP_PROP_UNKNOWN; }
     virtual bool setProperty(int, double) { return false; }
     virtual bool grabFrame() = 0;
     virtual bool retrieveFrame(int, OutputArray) = 0;
@@ -202,10 +202,10 @@ class IVideoWriter
 {
 public:
     virtual ~IVideoWriter() {}
-    virtual double getProperty(int) const { return 0; }
+    virtual double getProperty(int) const { return CAP_PROP_UNKNOWN; }
     virtual bool setProperty(int, double) { return false; }
     virtual bool isOpened() const = 0;
-    virtual void write(InputArray) = 0;
+    virtual bool write(InputArray) = 0;
     virtual int getCaptureDomain() const { return cv::CAP_ANY; } // Return the type of the capture object: CAP_FFMPEG, etc...
 };
 
@@ -343,7 +343,7 @@ Ptr<IVideoCapture> create_V4L_capture_file(const std::string &filename);
 Ptr<IVideoCapture> create_OpenNI2_capture_cam( int index );
 Ptr<IVideoCapture> create_OpenNI2_capture_file( const std::string &filename );
 
-Ptr<IVideoCapture> create_Images_capture(const std::string &filename);
+Ptr<IVideoCapture> create_Images_capture(const std::string& filename, const VideoCaptureParameters& params);
 Ptr<IVideoWriter> create_Images_writer(const std::string& filename, int fourcc,
                                        double fps, const Size& frameSize,
                                        const VideoWriterParameters& params);

@@ -135,7 +135,17 @@ uchar* FillGrayRow4( uchar* data, uchar* indices, int len, uchar* palette );
 uchar* FillColorRow1( uchar* data, uchar* indices, int len, PaletteEntry* palette );
 uchar* FillGrayRow1( uchar* data, uchar* indices, int len, uchar* palette );
 
-CV_INLINE bool  isBigEndian( void )
+static const size_t MAX_IMAGE_ROW_SIZE = static_cast<size_t>(1) << 28;  // 256 MB
+
+struct RowPitchParams {
+    int src_pitch;
+    size_t bytes_per_row;
+};
+
+RowPitchParams calculateRowPitch(int width, int bpp, int alignment, const char* format_name);
+int calculateRowSize(int width, int nch, const char* format_name);
+
+inline bool  isBigEndian( void )
 {
 #ifdef WORDS_BIGENDIAN
     return true;

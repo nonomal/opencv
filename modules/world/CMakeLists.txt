@@ -69,6 +69,13 @@ foreach(m ${OPENCV_MODULE_${the_module}_DEPS} opencv_world)
   endif()
 endforeach()
 
+# MLAS_OBJECTS (set with PARENT_SCOPE inside 3rdparty/mlas) doesn't
+# survive back to this scope. Pull the OBJECT library objects
+# in directly using the globally-visible target and cache flag.
+if(OPENCV_DNN_MLAS_ENABLED AND TARGET opencv_dnn_mlas)
+  list(APPEND sources_list $<TARGET_OBJECTS:opencv_dnn_mlas>)
+endif()
+
 ocv_glob_module_sources(HEADERS ${headers_list} SOURCES ${sources_list})
 
 ocv_module_include_directories()
@@ -82,6 +89,11 @@ if(";${OPENCV_MODULES_BUILD};" MATCHES ";opencv_viz;" AND OPENCV_MODULE_opencv_v
 endif()
 
 ocv_target_compile_definitions(${the_module} PRIVATE OPENCV_MODULE_IS_PART_OF_WORLD=1)
+
+# NOTE: https://github.com/opencv/opencv/issues/25543
+if (WITH_QT AND QT_VERSION_MAJOR GREATER 5)
+  qt_disable_unicode_defines(${the_module})
+endif()
 
 if(BUILD_opencv_imgcodecs AND OPENCV_MODULE_opencv_imgcodecs_IS_PART_OF_WORLD)
   ocv_imgcodecs_configure_target()

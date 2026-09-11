@@ -1,4 +1,4 @@
-/***********************************************************************
+/*M*********************************************************************
  * Software License Agreement (BSD License)
  *
  * Copyright 2008-2009  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
@@ -46,6 +46,11 @@
 #include "random.h"
 #include "saving.h"
 
+#if defined(__clang__) || defined(__GNUC__)
+#define CV_RESTRICT __restrict__
+#else
+#define CV_RESTRICT
+#endif
 
 namespace cvflann
 {
@@ -90,6 +95,9 @@ public:
 
         trees_ = get_param(index_params_,"trees",4);
         tree_roots_ = new NodePtr[trees_];
+        for (int i = 0; i < trees_; ++i) {
+            tree_roots_[i] = NULL;
+        }
 
         // Create a permutable array of indices to the input vectors.
         vind_.resize(size_);
@@ -122,6 +130,13 @@ public:
      */
     void buildIndex() CV_OVERRIDE
     {
+        if (size_ == 0) {
+            for (int i = 0; i < trees_; i++) {
+                tree_roots_[i] = NULL;
+            }
+            return;
+        }
+
         /* Construct the randomized trees. */
         for (int i = 0; i < trees_; i++) {
             /* Randomize the order of vectors to allow for unbiased sampling. */
@@ -131,7 +146,7 @@ public:
             std::random_shuffle(vind_.begin(), vind_.end());
 #endif
 
-            tree_roots_[i] = divideTree(&vind_[0], int(size_) );
+            tree_roots_[i] = divideTree(vind_.data(), int(size_) );
         }
     }
 
@@ -203,6 +218,8 @@ public:
      */
     void findNeighbors(ResultSet<DistanceType>& result, const ElementType* vec, const SearchParams& searchParams) CV_OVERRIDE
     {
+        if (size_ == 0) return;
+
         const int maxChecks = get_param(searchParams,"checks", 32);
         const float epsError = 1+get_param(searchParams,"eps",0.0f);
         const bool explore_all_trees = get_param(searchParams,"explore_all_trees",false);
@@ -281,6 +298,10 @@ private:
      */
     NodePtr divideTree(int* ind, int count)
     {
+        if (count <= 0) {
+            return NULL;
+        }
+
         NodePtr node = pool_.allocate<Node>(); // allocate memory
 
         /* If too few exemplars remain, then make this a leaf node. */
@@ -320,9 +341,7 @@ private:
         int cnt = std::min((int)SAMPLE_MEAN+1, count);
         for (int j = 0; j < cnt; ++j) {
             ElementType* v = dataset_[ind[j]];
-            for (size_t k=0; k<veclen_; ++k) {
-                mean_[k] += v[k];
-            }
+            Sum(v, veclen_, mean_);
         }
         for (size_t k=0; k<veclen_; ++k) {
             mean_[k] /= cnt;
@@ -331,10 +350,7 @@ private:
         /* Compute variances (no need to divide by count). */
         for (int j = 0; j < cnt; ++j) {
             ElementType* v = dataset_[ind[j]];
-            for (size_t k=0; k<veclen_; ++k) {
-                DistanceType dist = v[k] - mean_[k];
-                var_[k] += dist * dist;
-            }
+            Var(v, mean_, veclen_, var_);
         }
         /* Select one of the highest variance indices at random. */
         cutfeat = selectDivision(var_);
@@ -449,7 +465,11 @@ private:
         DynamicBitset checked(size_);
 
         // Priority queue storing intermediate branches in the best-bin-first search
-        const cv::Ptr<Heap<BranchSt>>& heap = Heap<BranchSt>::getPooledInstance(cv::utils::getThreadID(), (int)size_);
+        // Kept in thread_local storage so each thread owns an independent heap
+        // and no process-wide lock is taken on the search hot path (issue #25281).
+        thread_local cv::Ptr<Heap<BranchSt>> heap = cv::makePtr<Heap<BranchSt>>((int)size_);
+        heap->clear();
+        heap->reserve((int)size_);
 
         /* Search once through each tree down to root. */
         for (i = 0; i < trees_; ++i) {
@@ -477,6 +497,10 @@ private:
     void searchLevel(ResultSet<DistanceType>& result_set, const ElementType* vec, NodePtr node, DistanceType mindist, int& checkCount, int maxCheck,
                      float epsError, const cv::Ptr<Heap<BranchSt>>& heap, DynamicBitset& checked, bool explore_all_trees = false)
     {
+        if (node == NULL) {
+            return;
+        }
+
         if (result_set.worstDist()<mindist) {
             //			printf("Ignoring branch, too far\n");
             return;
@@ -531,6 +555,10 @@ private:
      */
     void searchLevelExact(ResultSet<DistanceType>& result_set, const ElementType* vec, const NodePtr node, DistanceType mindist, const float epsError)
     {
+        if (node == NULL) {
+            return;
+        }
+
         /* If this is a leaf node, then do check and return. */
         if ((node->child1 == NULL)&&(node->child2 == NULL)) {
             int index = node->divfeat;
@@ -584,6 +612,18 @@ private:
         RAND_DIM=5
     };
 
+    void Sum(const ElementType* CV_RESTRICT data, size_t len, DistanceType* CV_RESTRICT mean) {
+        for (size_t k=0; k<len; ++k) {
+            mean[k] += data[k];
+        }
+    }
+
+    void Var(const ElementType* CV_RESTRICT data, const DistanceType* CV_RESTRICT mean, size_t len, DistanceType*CV_RESTRICT var) {
+        for (size_t k=0; k<len; ++k) {
+            DistanceType dist = data[k] - mean[k];
+            var[k] += dist * dist;
+        }
+    }
 
     /**
      * Number of randomized trees that are used

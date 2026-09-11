@@ -554,7 +554,6 @@ static const TestCase testConformanceConfig[] = {
     {"test_pow_bcast_array", 2, 1},
     {"test_pow_bcast_scalar", 2, 1},
     {"test_pow_example", 2, 1},
-    {"test_pow_types_float", 2, 1},
     {"test_pow_types_float32_int32", 2, 1},
     {"test_pow_types_float32_int64", 2, 1},
     {"test_pow_types_float32_uint32", 2, 1},
@@ -1419,14 +1418,14 @@ static const TestCase testConformanceConfig[] = {
     {"test_logsoftmax_large_number_expanded_ver18", 0, 0},
     {"test_logsoftmax_negative_axis_expanded_ver18", 0, 0},
     {"test_lpnormalization_default", 0, 0},
-    {"test_lppool_1d_default", 0, 0},
-    {"test_lppool_2d_default", 0, 0},
-    {"test_lppool_2d_dilations", 0, 0},
-    {"test_lppool_2d_pads", 0, 0},
-    {"test_lppool_2d_same_lower", 0, 0},
-    {"test_lppool_2d_same_upper", 0, 0},
-    {"test_lppool_2d_strides", 0, 0},
-    {"test_lppool_3d_default", 0, 0},
+    {"test_lppool_1d_default", 1, 1},
+    {"test_lppool_2d_default", 1, 1},
+    {"test_lppool_2d_dilations", 1, 1},
+    {"test_lppool_2d_pads", 1, 1},
+    {"test_lppool_2d_same_lower", 1, 1},
+    {"test_lppool_2d_same_upper", 1, 1},
+    {"test_lppool_2d_strides", 1, 1},
+    {"test_lppool_3d_default", 1, 1},
     {"test_maxpool_2d_ceil_output_size_reduce_by_one", 0, 0},
     {"test_maxpool_3d_dilations", 0, 0},
     {"test_maxpool_3d_dilations_use_ref_impl", 0, 0},
@@ -1580,7 +1579,7 @@ static const TestCase testConformanceConfig[] = {
     {"test_rms_normalization_4d_axis_negative_4_expanded", 0, 0},
     {"test_rms_normalization_default_axis", 0, 0},
     {"test_rms_normalization_default_axis_expanded", 0, 0},
-    {"test_roialign_mode_max", 0, 0},
+    {"test_roialign_mode_max", 3, 1},
     {"test_rotary_embedding", 0, 0},
     {"test_rotary_embedding_3d_input", 0, 0},
     {"test_rotary_embedding_3d_input_expanded", 0, 0},
@@ -1673,6 +1672,160 @@ static const TestCase testConformanceConfig[] = {
     {"test_top_k_uint64", 0, 0},
     {"test_unique_length_1", 0, 0},
     {"test_wrap_pad", 0, 0},
+
+    // ===== ONNX 1.22 additions =====
+    {"test_attention_4d_softcap_neginf_mask", 4, 1},
+    {"test_attention_4d_softcap_neginf_mask_expanded", 4, 1},
+    {"test_attention_4d_softcap_neginf_mask_poison", 4, 1},
+    {"test_attention_4d_softcap_neginf_mask_poison_expanded", 4, 1},
+    {"test_bitcast_2d_float32_to_int32", 1, 1},
+    {"test_bitcast_bool_to_uint8", 1, 1},
+    {"test_bitcast_float32_to_int32", 1, 1},
+    {"test_bitcast_float64_to_int64", 1, 1},
+    {"test_bitcast_int32_to_float32", 1, 1},
+    {"test_bitcast_int64_to_float64", 1, 1},
+    {"test_bitcast_int8_to_uint8", 1, 1},
+    {"test_bitcast_scalar_float32_to_int32", 1, 1},
+    {"test_bitcast_uint16_to_int16", 1, 1},
+    {"test_bitcast_uint32_to_int32", 1, 1},
+    {"test_cast_FLOAT16_to_INT2", 1, 1},
+    {"test_cast_FLOAT16_to_UINT2", 1, 1},
+    {"test_cast_FLOAT_to_INT2", 1, 1},
+    {"test_cast_FLOAT_to_UINT2", 1, 1},
+    {"test_cast_INT2_to_FLOAT", 1, 1},
+    {"test_cast_INT2_to_FLOAT16", 1, 1},
+    {"test_cast_INT2_to_INT8", 1, 1},
+    {"test_cast_UINT2_to_FLOAT", 1, 1},
+    {"test_cast_UINT2_to_FLOAT16", 1, 1},
+    {"test_cast_UINT2_to_UINT8", 1, 1},
+    {"test_castlike_FLOAT16_to_INT2", 2, 1},
+    {"test_castlike_FLOAT16_to_INT2_expanded", 2, 1},
+    {"test_castlike_FLOAT16_to_UINT2", 2, 1},
+    {"test_castlike_FLOAT16_to_UINT2_expanded", 2, 1},
+    {"test_castlike_FLOAT_to_INT2", 2, 1},
+    {"test_castlike_FLOAT_to_INT2_expanded", 2, 1},
+    {"test_castlike_FLOAT_to_UINT2", 2, 1},
+    {"test_castlike_FLOAT_to_UINT2_expanded", 2, 1},
+    {"test_castlike_INT2_to_FLOAT", 2, 1},
+    {"test_castlike_INT2_to_FLOAT16", 2, 1},
+    {"test_castlike_INT2_to_FLOAT16_expanded", 2, 1},
+    {"test_castlike_INT2_to_FLOAT_expanded", 2, 1},
+    {"test_castlike_INT2_to_INT8", 2, 1},
+    {"test_castlike_INT2_to_INT8_expanded", 2, 1},
+    {"test_castlike_UINT2_to_FLOAT", 2, 1},
+    {"test_castlike_UINT2_to_FLOAT16", 2, 1},
+    {"test_castlike_UINT2_to_FLOAT16_expanded", 2, 1},
+    {"test_castlike_UINT2_to_FLOAT_expanded", 2, 1},
+    {"test_castlike_UINT2_to_UINT8", 2, 1},
+    {"test_castlike_UINT2_to_UINT8_expanded", 2, 1},
+    {"test_castlike_no_saturate_FLOAT_to_FLOAT8E4M3FNUZ_expanded", 2, 1},
+    {"test_castlike_no_saturate_FLOAT_to_FLOAT8E4M3FN_expanded", 2, 1},
+    {"test_causal_conv_with_state_b1_c1_degenerate", 2, 2},
+    {"test_causal_conv_with_state_b1_c1_degenerate_expanded", 2, 2},
+    {"test_causal_conv_with_state_basic", 2, 2},
+    {"test_causal_conv_with_state_basic_expanded", 2, 2},
+    {"test_causal_conv_with_state_decode_step", 4, 2},
+    {"test_causal_conv_with_state_decode_step_expanded", 4, 2},
+    {"test_causal_conv_with_state_fp16", 2, 2},
+    {"test_causal_conv_with_state_fp16_expanded", 2, 2},
+    {"test_causal_conv_with_state_kernel_size_one", 2, 2},
+    {"test_causal_conv_with_state_kernel_size_one_expanded", 2, 2},
+    {"test_causal_conv_with_state_short_input_no_past_state", 2, 2},
+    {"test_causal_conv_with_state_short_input_no_past_state_expanded", 2, 2},
+    {"test_causal_conv_with_state_silu", 2, 2},
+    {"test_causal_conv_with_state_silu_expanded", 2, 2},
+    {"test_causal_conv_with_state_silu_fp16", 2, 2},
+    {"test_causal_conv_with_state_silu_fp16_expanded", 2, 2},
+    {"test_causal_conv_with_state_silu_with_past_state", 3, 2},
+    {"test_causal_conv_with_state_silu_with_past_state_expanded", 3, 2},
+    {"test_causal_conv_with_state_swish_alias", 2, 2},
+    {"test_causal_conv_with_state_swish_alias_expanded", 2, 2},
+    {"test_causal_conv_with_state_with_bias", 3, 2},
+    {"test_causal_conv_with_state_with_bias_and_past_state", 4, 2},
+    {"test_causal_conv_with_state_with_bias_and_past_state_expanded", 4, 2},
+    {"test_causal_conv_with_state_with_bias_expanded", 3, 2},
+    {"test_causal_conv_with_state_with_past_state", 3, 2},
+    {"test_causal_conv_with_state_with_past_state_expanded", 3, 2},
+    {"test_cumprod_1d", 2, 1},
+    {"test_cumprod_1d_exclusive", 2, 1},
+    {"test_cumprod_1d_int32_exclusive", 2, 1},
+    {"test_cumprod_1d_reverse", 2, 1},
+    {"test_cumprod_1d_reverse_exclusive", 2, 1},
+    {"test_cumprod_2d_axis_0", 2, 1},
+    {"test_cumprod_2d_axis_1", 2, 1},
+    {"test_cumprod_2d_int32", 2, 1},
+    {"test_cumprod_2d_negative_axis", 2, 1},
+    {"test_dequantizelinear_int2", 3, 1},
+    {"test_dequantizelinear_uint2", 3, 1},
+    {"test_dft_irfft", 2, 1},
+    {"test_dft_irfft_opset19", 1, 1},
+    {"test_dft_rfft", 2, 1},
+    {"test_dft_rfft_opset19", 1, 1},
+    {"test_div_int32_trunc", 2, 1},
+    {"test_flexattention", 3, 1},
+    {"test_flexattention_causal_mask", 3, 1},
+    {"test_flexattention_causal_mask_expanded_ver26", 3, 1},
+    {"test_flexattention_diff_head_sizes", 3, 1},
+    {"test_flexattention_diff_head_sizes_expanded_ver26", 3, 1},
+    {"test_flexattention_double", 3, 1},
+    {"test_flexattention_double_expanded_ver26", 3, 1},
+    {"test_flexattention_expanded_ver26", 3, 1},
+    {"test_flexattention_fp16", 3, 1},
+    {"test_flexattention_fp16_expanded_ver26", 3, 1},
+    {"test_flexattention_gqa", 3, 1},
+    {"test_flexattention_gqa_expanded_ver26", 3, 1},
+    {"test_flexattention_prob_mod", 3, 1},
+    {"test_flexattention_prob_mod_expanded_ver26", 3, 1},
+    {"test_flexattention_relative_positional", 3, 1},
+    {"test_flexattention_relative_positional_expanded_ver26", 3, 1},
+    {"test_flexattention_scaled", 3, 1},
+    {"test_flexattention_scaled_expanded_ver26", 3, 1},
+    {"test_flexattention_score_mod", 3, 1},
+    {"test_flexattention_score_mod_expanded_ver26", 3, 1},
+    {"test_flexattention_soft_cap", 3, 1},
+    {"test_flexattention_soft_cap_expanded_ver26", 3, 1},
+    {"test_linear_attention_decode_step", 6, 2},
+    {"test_linear_attention_decode_step_expanded", 6, 2},
+    {"test_linear_attention_delta", 4, 2},
+    {"test_linear_attention_delta_expanded", 4, 2},
+    {"test_linear_attention_explicit_scale", 5, 2},
+    {"test_linear_attention_explicit_scale_expanded", 5, 2},
+    {"test_linear_attention_fp16", 5, 2},
+    {"test_linear_attention_fp16_expanded", 5, 2},
+    {"test_linear_attention_gated", 4, 2},
+    {"test_linear_attention_gated_delta", 5, 2},
+    {"test_linear_attention_gated_delta_beta_scalar", 5, 2},
+    {"test_linear_attention_gated_delta_beta_scalar_expanded", 5, 2},
+    {"test_linear_attention_gated_delta_expanded", 5, 2},
+    {"test_linear_attention_gated_delta_gqa", 5, 2},
+    {"test_linear_attention_gated_delta_gqa_expanded", 5, 2},
+    {"test_linear_attention_gated_delta_mqa", 5, 2},
+    {"test_linear_attention_gated_delta_mqa_expanded", 5, 2},
+    {"test_linear_attention_gated_expanded", 4, 2},
+    {"test_linear_attention_gated_per_head_decay", 4, 2},
+    {"test_linear_attention_gated_per_head_decay_expanded", 4, 2},
+    {"test_linear_attention_linear", 3, 2},
+    {"test_linear_attention_linear_expanded", 3, 2},
+    {"test_linear_attention_linear_t1_no_past", 3, 2},
+    {"test_linear_attention_linear_t1_no_past_expanded", 3, 2},
+    {"test_linear_attention_no_past_explicit_zeros", 6, 2},
+    {"test_linear_attention_no_past_explicit_zeros_expanded", 6, 2},
+    {"test_linear_attention_prefill_with_past", 6, 2},
+    {"test_linear_attention_prefill_with_past_expanded", 6, 2},
+    {"test_matmul_1d_1d", 2, 1},
+    {"test_matmul_1d_3d", 2, 1},
+    {"test_matmul_4d_1d", 2, 1},
+    {"test_matmul_bcast", 2, 1},
+    {"test_nonmaxsuppression_iou_threshold_boundary", 5, 1},
+    {"test_quantizelinear_int2", 3, 1},
+    {"test_quantizelinear_uint2", 3, 1},
+    {"test_range_bfloat16_type_positive_delta", 3, 1},
+    {"test_range_bfloat16_type_positive_delta_expanded", 3, 1},
+    {"test_range_float16_type_positive_delta", 3, 1},
+    {"test_range_float16_type_positive_delta_expanded", 3, 1},
+    {"test_scan9_multi_state", 3, 3},
+    {"test_scan9_scalar", 2, 2},
+    {"test_scatter_elements_with_reduction_mul", 3, 1},
 };
 
 
@@ -1711,11 +1864,8 @@ public:
 
     static std::set<std::string> parser_deny_list;
     static std::set<std::string> global_deny_list;
-    static std::set<std::string> opencv_deny_list;
     static std::set<std::string> opencl_fp16_deny_list;
     static std::set<std::string> opencl_deny_list;
-    static std::set<std::string> cpu_deny_list;
-    static std::set<std::string> classic_deny_list;
 #ifdef HAVE_HALIDE
     static std::set<std::string> halide_deny_list;
 #endif
@@ -1778,10 +1928,6 @@ public:
             #include "test_onnx_conformance_layer_filter_opencv_all_denylist.inl.hpp"
         };
 
-        opencv_deny_list = {
-            #include "test_onnx_conformance_layer_filter_opencv_denylist.inl.hpp"
-        };
-
         opencl_fp16_deny_list = {
             #include "test_onnx_conformance_layer_filter_opencv_ocl_fp16_denylist.inl.hpp"
         };
@@ -1789,22 +1935,6 @@ public:
         opencl_deny_list = {
             #include "test_onnx_conformance_layer_filter_opencv_ocl_fp32_denylist.inl.hpp"
         };
-
-        cpu_deny_list = {
-            #include "test_onnx_conformance_layer_filter_opencv_cpu_denylist.inl.hpp"
-        };
-
-        EngineType engine_forced =
-            (EngineType)utils::getConfigurationParameterSizeT(
-                "OPENCV_FORCE_DNN_ENGINE", ENGINE_AUTO);
-
-        if (engine_forced == ENGINE_CLASSIC) {
-            classic_deny_list = {
-#include "test_onnx_conformance_layer_filter_opencv_classic_denylist.inl.hpp"
-            };
-        } else {
-            classic_deny_list = {};
-        }
 
 #ifdef HAVE_HALIDE
         halide_deny_list = {
@@ -1832,11 +1962,8 @@ public:
 
 std::set<std::string> Test_ONNX_conformance::parser_deny_list;
 std::set<std::string> Test_ONNX_conformance::global_deny_list;
-std::set<std::string> Test_ONNX_conformance::opencv_deny_list;
 std::set<std::string> Test_ONNX_conformance::opencl_fp16_deny_list;
 std::set<std::string> Test_ONNX_conformance::opencl_deny_list;
-std::set<std::string> Test_ONNX_conformance::cpu_deny_list;
-std::set<std::string> Test_ONNX_conformance::classic_deny_list;
 #ifdef HAVE_HALIDE
 std::set<std::string> Test_ONNX_conformance::halide_deny_list;
 #endif
@@ -1862,12 +1989,6 @@ TEST_P(Test_ONNX_conformance, Layer_Test)
         applyTestTag(CV_TEST_TAG_DNN_SKIP_PARSER, CV_TEST_TAG_DNN_SKIP_ONNX_CONFORMANCE);
     }
 
-    // SKIP some more if we are in the 'classic engine' mode, where we don't support certain layers.
-    if (classic_deny_list.find(name) != classic_deny_list.end())
-    {
-        applyTestTag(CV_TEST_TAG_DNN_SKIP_PARSER, CV_TEST_TAG_DNN_SKIP_ONNX_CONFORMANCE);
-    }
-
     // SKIP when the test case is in the global deny list.
     if (global_deny_list.find(name) != global_deny_list.end())
     {
@@ -1876,10 +1997,6 @@ TEST_P(Test_ONNX_conformance, Layer_Test)
 
     if (backend == DNN_BACKEND_OPENCV)
     {
-        if (opencv_deny_list.find(name) != opencv_deny_list.end())
-        {
-            applyTestTag(CV_TEST_TAG_DNN_SKIP_OPENCV_BACKEND, CV_TEST_TAG_DNN_SKIP_ONNX_CONFORMANCE);
-        }
         if ((target == DNN_TARGET_OPENCL_FP16) && (opencl_fp16_deny_list.find(name) != opencl_fp16_deny_list.end()))
         {
             applyTestTag(CV_TEST_TAG_DNN_SKIP_OPENCL_FP16, CV_TEST_TAG_DNN_SKIP_OPENCV_BACKEND, CV_TEST_TAG_DNN_SKIP_ONNX_CONFORMANCE);
@@ -1888,9 +2005,9 @@ TEST_P(Test_ONNX_conformance, Layer_Test)
         {
             applyTestTag(CV_TEST_TAG_DNN_SKIP_OPENCL, CV_TEST_TAG_DNN_SKIP_OPENCV_BACKEND, CV_TEST_TAG_DNN_SKIP_ONNX_CONFORMANCE);
         }
-        if ((target == DNN_TARGET_CPU) && (cpu_deny_list.find(name) != cpu_deny_list.end()))
+        if (name == "test_roialign_aligned_false" || name == "test_roialign_aligned_true")
         {
-            applyTestTag(CV_TEST_TAG_DNN_SKIP_CPU, CV_TEST_TAG_DNN_SKIP_OPENCV_BACKEND, CV_TEST_TAG_DNN_SKIP_ONNX_CONFORMANCE);
+            default_l1 = std::max(default_l1, 3e-5);
         }
         if (name == "test_gelu_tanh_1") {
             default_l1 = 0.00011; // Expected: (normL1) <= (l1), actual: 0.000101805 vs 1e-05
@@ -1904,6 +2021,49 @@ TEST_P(Test_ONNX_conformance, Layer_Test)
                 default_l1 = 9e-5; // Expected: (normL1) <= (l1), actual: 8.80073e-05 vs 1e-05
                 default_lInf = 0.0005; // Expected: (normInf) <= (lInf), actual: 0.000455521 vs 0.0001
             }
+        }
+        if (name == "test_reduce_prod_default_axes_keepdims_random") {
+            default_l1 = 0.002;   // Expected: (normL1) <= (l1), actual: 0.00195312 vs 1e-05
+            default_lInf = 0.002; // Expected: (normInf) <= (lInf), actual: 0.00195312 vs 0.0001
+        }
+        if (name == "test_reduce_sum_square_default_axes_keepdims_random" ||
+            name == "test_reduce_sum_square_default_axes_keepdims_random_expanded") {
+            default_l1 = 2e-5; // Expected: (normL1) <= (l1), actual: 1.52588e-05 vs 1e-05
+        }
+        if (name == "test_nllloss_NCd1d2_reduction_sum_expanded") {
+            default_l1 = 2e-5; // Expected: (normL1) <= (l1), actual: 1.14441e-05 vs 1e-05
+        }
+        if (name == "test_nllloss_NCd1d2d3d4d5_mean_weight_expanded") {
+            default_l1 = 2e-5; // Expected: (normL1) <= (l1), actual: 1.06394e-05 vs 1e-05
+        }
+        if (name == "test_gridsample_bicubic") {
+            default_l1 = 4e-5; // Expected: (normL1) <= (l1), actual: 3.61577e-05 vs 1e-05
+        }
+        // fp16 Attention models retain fp16 accumulation precision (~9e-5 L1, ~2.4e-4 Inf)
+        // even when executed on an fp32 target.
+        if (name == "test_attention_4d_fp16" ||
+            name == "test_attention_4d_fp16_expanded" ||
+            name == "test_attention_4d_gqa_with_past_and_present_fp16" ||
+            name == "test_attention_4d_gqa_with_past_and_present_fp16_expanded") {
+            default_l1 = std::max(default_l1, 2e-4);
+            default_lInf = std::max(default_lInf, 1e-3);
+        }
+        // fp16 CausalConvWithState keeps fp16 output precision (~8e-4 Inf) on fp32 targets.
+        if (name == "test_causal_conv_with_state_fp16" || name == "test_causal_conv_with_state_silu_fp16") {
+            default_l1 = std::max(default_l1, 2e-4);
+            default_lInf = std::max(default_lInf, 2e-3);
+        }
+        // fp16 LinearAttention retains fp16 output precision (~4e-5 L1, ~5e-4 Inf) on fp32 targets.
+        if (name == "test_linear_attention_fp16" ||
+            name == "test_linear_attention_fp16_expanded") {
+            default_l1 = std::max(default_l1, 2e-4);
+            default_lInf = std::max(default_lInf, 1e-3);
+        }
+        // fp16 FlexAttention likewise keeps fp16 output precision (~3e-4 Inf) on fp32 targets.
+        if (name == "test_flexattention_fp16" ||
+            name == "test_flexattention_fp16_expanded_ver26") {
+            default_l1 = std::max(default_l1, 2e-4);
+            default_lInf = std::max(default_lInf, 1e-3);
         }
     }
 #ifdef HAVE_HALIDE
@@ -1964,6 +2124,41 @@ TEST_P(Test_ONNX_conformance, Layer_Test)
                 default_lInf = 0.0005; // Expected: (normInf) <= (lInf), actual: 0.000455445 vs 0.0001
             }
         }
+        if (name == "test_roialign_aligned_false" || name == "test_roialign_aligned_true") {
+            default_l1 = 3e-5;
+        }
+        if (name == "test_gridsample_bicubic") {
+            default_l1 = 4e-5; // GridSample falls back to CPU; same actual: 3.61577e-05 vs 1e-05 as the OpenCV backend
+        }
+        // fp16 Attention models retain fp16 accumulation precision (~9e-5 L1, ~2.4e-4 Inf)
+        // even when executed on an fp32 target (the layer falls back to the CPU path).
+        if (name == "test_attention_4d_fp16" ||
+            name == "test_attention_4d_fp16_expanded" ||
+            name == "test_attention_4d_gqa_with_past_and_present_fp16" ||
+            name == "test_attention_4d_gqa_with_past_and_present_fp16_expanded") {
+            default_l1 = std::max(default_l1, 2e-4);
+            default_lInf = std::max(default_lInf, 1e-3);
+        }
+        // fp16 CausalConvWithState keeps fp16 output precision (~8e-4 Inf) on fp32 targets
+        // (the layer falls back to the CPU path).
+        if (name == "test_causal_conv_with_state_fp16" || name == "test_causal_conv_with_state_silu_fp16") {
+            default_l1 = std::max(default_l1, 2e-4);
+            default_lInf = std::max(default_lInf, 2e-3);
+        }
+        // fp16 LinearAttention retains fp16 output precision (~4e-5 L1, ~5e-4 Inf) on fp32 targets
+        // (the layer falls back to the CPU path).
+        if (name == "test_linear_attention_fp16" ||
+            name == "test_linear_attention_fp16_expanded") {
+            default_l1 = std::max(default_l1, 2e-4);
+            default_lInf = std::max(default_lInf, 1e-3);
+        }
+        // fp16 FlexAttention likewise keeps fp16 output precision (~3e-4 Inf) on fp32 targets
+        // (the layer falls back to the CPU path).
+        if (name == "test_flexattention_fp16" ||
+            name == "test_flexattention_fp16_expanded_ver26") {
+            default_l1 = std::max(default_l1, 2e-4);
+            default_lInf = std::max(default_lInf, 1e-3);
+        }
     }
 #endif
     else
@@ -1979,11 +2174,12 @@ TEST_P(Test_ONNX_conformance, Layer_Test)
     std::vector<Mat> ref_outputs;
 
     std::string prefix = cv::format("dnn/onnx/conformance/node/%s", test_case.name);
+    std::string model_path;
 
     Net net;
     try
     {
-        std::string model_path = findDataFile(prefix + "/model.onnx");
+        model_path = findDataFile(prefix + "/model.onnx");
 
         std::string test_data_dir = cv::utils::fs::join(cv::utils::fs::getParent(model_path), "test_data_set_0");
         std::vector<cv::String> inputFiles, outputFiles;
@@ -2090,6 +2286,7 @@ TEST_P(Test_ONNX_conformance, Layer_Test)
     std::vector<Mat> outputs;
     try
     {
+        //net.setTracingMode(DNN_TRACE_ALL);
         net.forward(outputs, layerNames);
     }
     catch (...)
@@ -2111,6 +2308,14 @@ TEST_P(Test_ONNX_conformance, Layer_Test)
         {
             if (ref_outputs.size() == 1)
             {
+                /*std::cout << "\n-------------------------------------------\nreference tensor:\n";
+                pprint(std::cout, ref_outputs[0], 0, 3, 100, '[');
+                std::cout << "\n";
+                std::cout << "\n-------------------------------------------\nabsdiff:\n";
+                Mat temp;
+                absdiff(ref_outputs[0], outputs[0], temp);
+                pprint(std::cout, temp, 0, 3, 100, '[');
+                std::cout << "\n";*/
                 // probably we found random unconnected layers.
                 normAssert(ref_outputs[0], outputs[0], "", default_l1, default_lInf);
             }

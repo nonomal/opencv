@@ -43,6 +43,10 @@
 #include "opencv2/ts/ts_gtest.h"
 #include "test_precomp.hpp"
 
+#include <chrono>
+#include <future>
+#include <thread>
+
 namespace opencv_test { namespace {
 
 class CV_ImgWarpBaseTest : public cvtest::ArrayTest
@@ -599,85 +603,6 @@ static void check_resize_area(const Mat& expected, const Mat& actual, double tol
     ASSERT_EQ(0, cvtest::norm(one_channel_diff, cv::NORM_INF));
 }
 
-///////////////////////////////////////////////////////////////////////////
-
-TEST(Imgproc_fitLine_vector_3d, regression)
-{
-    std::vector<Point3f> points_vector;
-
-    Point3f p21(4,4,4);
-    Point3f p22(8,8,8);
-
-    points_vector.push_back(p21);
-    points_vector.push_back(p22);
-
-    std::vector<float> line;
-
-    cv::fitLine(points_vector, line, DIST_L2, 0 ,0 ,0);
-
-    ASSERT_EQ(line.size(), (size_t)6);
-
-}
-
-TEST(Imgproc_fitLine_vector_2d, regression)
-{
-    std::vector<Point2f> points_vector;
-
-    Point2f p21(4,4);
-    Point2f p22(8,8);
-    Point2f p23(16,16);
-
-    points_vector.push_back(p21);
-    points_vector.push_back(p22);
-    points_vector.push_back(p23);
-
-    std::vector<float> line;
-
-    cv::fitLine(points_vector, line, DIST_L2, 0 ,0 ,0);
-
-    ASSERT_EQ(line.size(), (size_t)4);
-}
-
-TEST(Imgproc_fitLine_Mat_2dC2, regression)
-{
-    cv::Mat mat1 = Mat::zeros(3, 1, CV_32SC2);
-    std::vector<float> line1;
-
-    cv::fitLine(mat1, line1, DIST_L2, 0 ,0 ,0);
-
-    ASSERT_EQ(line1.size(), (size_t)4);
-}
-
-TEST(Imgproc_fitLine_Mat_2dC1, regression)
-{
-    cv::Matx<int, 3, 2> mat2;
-    std::vector<float> line2;
-
-    cv::fitLine(mat2, line2, DIST_L2, 0 ,0 ,0);
-
-    ASSERT_EQ(line2.size(), (size_t)4);
-}
-
-TEST(Imgproc_fitLine_Mat_3dC3, regression)
-{
-    cv::Mat mat1 = Mat::zeros(2, 1, CV_32SC3);
-    std::vector<float> line1;
-
-    cv::fitLine(mat1, line1, DIST_L2, 0 ,0 ,0);
-
-    ASSERT_EQ(line1.size(), (size_t)6);
-}
-
-TEST(Imgproc_fitLine_Mat_3dC1, regression)
-{
-    cv::Mat mat2 = Mat::zeros(2, 3, CV_32SC1);
-    std::vector<float> line2;
-
-    cv::fitLine(mat2, line2, DIST_L2, 0 ,0 ,0);
-
-    ASSERT_EQ(line2.size(), (size_t)6);
-}
-
 TEST(Imgproc_resize_area, regression)
 {
     static ushort input_data[16 * 16] = {
@@ -996,6 +921,33 @@ TEST(Imgproc_Warp, regression_19566)  // valgrind should detect problem if any
 }
 
 
+TEST(Imgproc_Warp, regression_28554)
+{
+    const Size inSize(128, 128);
+    const Size outSize(256, 256);
+
+    Mat inMat = Mat::ones(inSize, CV_16S);
+    Mat outMat = Mat(outSize, CV_16S);
+    Mat coeffs = Mat::eye(2, 3, CV_64F);
+    coeffs.at<double>(0, 2) = 64.;
+    coeffs.at<double>(1, 2) = 64.;
+
+    warpAffine(
+        inMat,
+        outMat,
+        coeffs,
+        outSize,
+        INTER_NEAREST,
+        cv::BORDER_CONSTANT,
+        0.0
+    );
+
+    Mat reference = Mat::zeros(outSize, CV_16S);
+    reference(cv::Rect(64, 64, 128, 128)) = 1;
+    ASSERT_EQ(0.0, cvtest::norm(reference, outMat, NORM_INF));
+}
+
+
 TEST(Imgproc_GetAffineTransform, singularity)
 {
     Point2f A_sample[3];
@@ -1164,6 +1116,151 @@ TEST(Imgproc_getPerspectiveTransform, issue_26916)
     hconcat(dst_points, ones, expected_homogeneous_dst_points);
 
     EXPECT_MAT_NEAR(obtained_homogeneous_dst_points, expected_homogeneous_dst_points, 1e-10);
+}
+
+static void rotation2affine(float scale, float angle, float cx, float cy, float* M)
+{
+    // (x - cx)*cos(a) + (y - cy)*sin(a) + cx
+    // -(x - cx)*sin(a) + (y - cy)*cos(a) + cy
+    float ca = cosf(angle), sa = sinf(angle);
+    M[0] = scale*ca; M[1] = scale*sa; M[2] = scale*(-cx*ca - cy*sa) + cx;
+    M[3] = -scale*sa; M[4] = scale*ca; M[5] = scale*(cx*sa - cy*ca) + cy;
+}
+
+TEST(Imgproc_Warping, Bicubic64F) {
+    // 1. Values exceeding INT_MAX: triggers UBSan float-cast-overflow if buftype is int
+    {
+        cv::Mat src(10, 10, CV_64FC1, cv::Scalar(1e100));
+        cv::Mat dst;
+        cv::Matx23f M(1.f, 0.f, 0.f, 0.f, 1.f, 0.f);
+        EXPECT_NO_THROW(cv::warpAffine(src, dst, M, cv::Size(20, 20),
+                                       cv::INTER_CUBIC, cv::BORDER_CONSTANT, cv::Scalar(0.0)));
+        ASSERT_EQ(dst.type(), CV_64FC1);
+        EXPECT_DOUBLE_EQ(dst.at<double>(5, 5), 1e100);
+    }
+    // 2. Fractional double values: ensures boundary pixels are not truncated to int
+    {
+        cv::Mat src(10, 10, CV_64FC1, cv::Scalar(1.5));
+        cv::Mat dst;
+        cv::Matx23f M(1.f, 0.f, 0.f, 0.f, 1.f, 0.f);
+        cv::warpAffine(src, dst, M, cv::Size(20, 20),
+                       cv::INTER_CUBIC, cv::BORDER_CONSTANT, cv::Scalar(1.5));
+        ASSERT_EQ(dst.type(), CV_64FC1);
+        // Boundary pixels (x=9, y=9) previously truncated (int)1.5 -> 1.0; now they preserve 1.5:
+        EXPECT_DOUBLE_EQ(dst.at<double>(9, 9), 1.5);
+    }
+}
+
+TEST(Imgproc_Warping, DISABLED_playground)
+{
+    int imgtype = CV_32F;
+    int imgcn = 3;
+    bool useOpenCL = true;
+
+    auto ts = cvtest::TS::ptr();
+    Mat img0 = imread(string(ts->get_data_path()) + "stereomatching/datasets/tsukuba/im2.png", 1), img1, img;
+    int iangle = -1;
+    int borderType = BORDER_CONSTANT;
+    Scalar borderValue(0, 128, 0);
+
+    double cvtscale = imgtype == CV_16U ? 256. : imgtype == CV_32F ? 1./255 : 1.;
+    if (imgcn == 1) {
+        cvtColor(img0, img1, COLOR_BGR2GRAY);
+    } else if (imgcn == 4) {
+        cvtColor(img0, img1, COLOR_BGR2BGRA);
+    } else if (imgcn == 3) {
+        img1 = img0;
+    } else {
+        CV_Assert(imgcn == 2);
+        std::vector<Mat> ch;
+        split(img0, ch);
+        ch.pop_back();
+        merge(ch, img1);
+    }
+    img1.convertTo(img, imgtype, cvtscale);
+    Mat canvas0(img.size(), imgtype), canvas8;
+    float cx = img.cols*0.5f, cy = img.rows*0.5f;
+    if (img.depth() == CV_32F) {
+        borderValue = Scalar(100*cvtscale, 0*cvtscale, 100*cvtscale);
+    }
+    UMat uimg, ucanvas;
+    if (useOpenCL) {
+        img.copyTo(uimg);
+    }
+
+    for(;;) {
+        iangle = (iangle + 1) % (360*4);
+        float angle = float(iangle*CV_PI/180.f*0.25f);
+        float scale = float(1 + 0.2f*sin(angle));
+        float Mdata[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        rotation2affine(scale, angle, cx, cy, Mdata);
+        Mat M(2, 3, CV_32F, Mdata);
+
+        double t0 = (double)getTickCount();
+        if (!useOpenCL) {
+            warpAffine(img, canvas0, M, canvas0.size(), INTER_CUBIC, borderType, borderValue);
+        } else {
+            warpAffine(uimg, ucanvas, M, uimg.size(), INTER_CUBIC, borderType, borderValue);
+            ocl::finish();
+        }
+        t0 = (double)getTickCount() - t0;
+
+        if (useOpenCL) {
+            ucanvas.copyTo(canvas0);
+        }
+        canvas0.convertTo(canvas8, CV_8U, 1./cvtscale);
+        if (canvas8.channels() == 2) {
+            std::vector<Mat> ch;
+            split(canvas8, ch);
+            ch.push_back(Mat::zeros(canvas8.size(), CV_8U));
+            merge(ch, canvas8);
+        }
+        printf("opencv time = %.1fms\n", t0*1000./getTickFrequency());
+        imshow("result (opencv)", canvas8);
+        int c = waitKey(1);
+        if (c < 0)
+            continue;
+        if ((c & 255) == 27)
+            break;
+        if ((waitKey() & 255) == 27)
+            break;
+    }
+}
+
+TEST(Imgproc_Warping, infinite_loop)
+{
+    std::promise<void> promise;
+    auto future = promise.get_future();
+
+    std::thread worker([&promise]() {
+        cv::Mat src(1, 10, CV_8UC1, cv::Scalar(128));
+        cv::Mat dst;
+        cv::Matx23f M(1.f, 0.f, 0.f, 0.f, 1.f, 0.f);
+
+        cv::warpAffine(src, dst, M, cv::Size(10, 10), cv::INTER_CUBIC,
+                       cv::BORDER_REFLECT_101);
+        promise.set_value();
+    });
+
+    auto status = future.wait_for(std::chrono::seconds(1));
+    if (status == std::future_status::ready) {
+        worker.join();
+    } else {
+        worker.detach();
+    }
+
+    EXPECT_EQ(status, std::future_status::ready)
+        << "cv::warpAffine hung in an infinite loop!";
+}
+
+TEST(Imgproc_Warping, interpolate_loop)
+{
+    // 1000x1000 destination image with out-of-bounds coordinates:
+    cv::Mat src(2, 2, CV_8UC1, cv::Scalar(42));
+    cv::Mat dst;
+    // A perspective or affine transform mapping pixels to large coordinates:
+    cv::Matx23d M(1, 0, 1e7, 0, 1, 1e7);
+    cv::warpAffine(src, dst, M, cv::Size(50, 50), cv::INTER_NEAREST, cv::BORDER_REFLECT_101);
 }
 
 }} // namespace

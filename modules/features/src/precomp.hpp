@@ -45,6 +45,11 @@
 
 #include "opencv2/features.hpp"
 #include "opencv2/imgproc.hpp"
+#include "opencv2/geometry.hpp"
+
+#ifdef HAVE_OPENCV_DNN
+#include "opencv2/dnn.hpp"
+#endif
 
 #include "opencv2/core/utility.hpp"
 #include "opencv2/core/private.hpp"

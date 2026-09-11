@@ -32,6 +32,10 @@ if(POLICY CMP0148)
   cmake_policy(SET CMP0148 OLD)  # CMake 3.27+: use CMake FindPythonInterp and FindPythonLib if available.
 endif()
 
+if(POLICY CMP0218)
+  cmake_policy(SET CMP0218 NEW)  # Suppress warning for CMAKE_WARN_DEPRECATED in CMake 4.4.0+
+endif()
+
 #
 # Configure OpenCV CMake hooks
 #
@@ -75,6 +79,12 @@ project(OpenCV CXX C)
 
 if(OPENCV_WORKAROUND_CMAKE_20989)
   set(CMAKE_SYSTEM_PROCESSOR ${CMAKE_SYSTEM_PROCESSOR_BACKUP})
+endif()
+
+include(CheckLanguage)
+check_language(ASM)
+if(CMAKE_ASM_COMPILER)
+  enable_language(ASM)
 endif()
 
 enable_testing()
@@ -144,11 +154,12 @@ OCV_OPTION(BUILD_JASPER             "Build libjasper from source"        (WIN32 
 OCV_OPTION(BUILD_JPEG               "Build libjpeg from source"          (WIN32 OR ANDROID OR APPLE OR OPENCV_FORCE_3RDPARTY_BUILD) )
 OCV_OPTION(BUILD_PNG                "Build libpng from source"           (WIN32 OR ANDROID OR APPLE OR OPENCV_FORCE_3RDPARTY_BUILD) )
 OCV_OPTION(BUILD_WEBP               "Build WebP from source"             (((WIN32 OR ANDROID OR APPLE) AND NOT WINRT) OR OPENCV_FORCE_3RDPARTY_BUILD) )
+OCV_OPTION(BUILD_HARFBUZZ           "Build HarfBuzz from source"         (WIN32 OR ANDROID OR APPLE OR OPENCV_FORCE_3RDPARTY_BUILD) )
 OCV_OPTION(BUILD_TBB                "Download and build TBB from source" (ANDROID OR OPENCV_FORCE_3RDPARTY_BUILD) )
 OCV_OPTION(BUILD_IPP_IW             "Build IPP IW from source"           (NOT MINGW OR OPENCV_FORCE_3RDPARTY_BUILD) IF (X86_64 OR X86) AND NOT WINRT )
 OCV_OPTION(BUILD_ITT                "Build Intel ITT from source"
     (NOT MINGW OR OPENCV_FORCE_3RDPARTY_BUILD)
-    IF (X86_64 OR X86 OR ARM OR AARCH64 OR PPC64 OR PPC64LE) AND NOT WINRT AND NOT APPLE_FRAMEWORK
+    IF (X86_64 OR X86 OR ARM OR AARCH64 OR PPC64 OR PPC64LE OR LOONGARCH64) AND NOT WINRT AND NOT APPLE_FRAMEWORK
 )
 OCV_OPTION(BUILD_CLAPACK            "Build CLapack from source"          (((WIN32 OR ANDROID) AND NOT APPLE) OR OPENCV_FORCE_3RDPARTY_BUILD) )
 
@@ -167,7 +178,7 @@ OCV_OPTION(WITH_CAP_IOS "Enable iOS video capture" ON
   VERIFY HAVE_CAP_IOS)
 OCV_OPTION(WITH_CAROTENE "Use NVidia carotene acceleration library for ARM platform" (NOT CV_DISABLE_OPTIMIZATION)
   VISIBLE_IF (ARM OR AARCH64) AND NOT IOS AND NOT XROS)
-OCV_OPTION(WITH_KLEIDICV "Use KleidiCV library for ARM platforms" (ANDROID AND AARCH64 AND NOT CV_DISABLE_OPTIMIZATION)
+OCV_OPTION(WITH_KLEIDICV "Use KleidiCV library for ARM platforms" (NOT CV_DISABLE_OPTIMIZATION)
   VISIBLE_IF (AARCH64 AND (ANDROID OR UNIX)))
 OCV_OPTION(WITH_NDSRVP "Use Andes RVP extension" (NOT CV_DISABLE_OPTIMIZATION)
   VISIBLE_IF RISCV)
@@ -193,6 +204,9 @@ OCV_OPTION(WITH_CUBLAS "Include NVidia Cuda Basic Linear Algebra Subprograms (BL
 OCV_OPTION(WITH_CUDNN "Include NVIDIA CUDA Deep Neural Network (cuDNN) library support" WITH_CUDA
   VISIBLE_IF WITH_CUDA
   VERIFY HAVE_CUDNN)
+OCV_OPTION(WITH_CUDNNJIT "Include NVIDIA CUDA Deep Neural Network (cuDNN) graph API support with runtime compiled (JIT) engines, used only when WITH_CUDNN is off" OFF
+  VISIBLE_IF WITH_CUDA
+  VERIFY HAVE_CUDNNJIT OR HAVE_CUDNN)
 OCV_OPTION(WITH_NVCUVID "Include NVidia Video Decoding library support" ON
   VISIBLE_IF WITH_CUDA
   VERIFY HAVE_NVCUVID)
@@ -224,6 +238,9 @@ OCV_OPTION(WITH_WAYLAND "Include Wayland support" OFF
 OCV_OPTION(WITH_IPP "Include Intel IPP support" (NOT MINGW AND NOT CV_DISABLE_OPTIMIZATION)
   VISIBLE_IF (X86_64 OR X86) AND NOT WINRT AND NOT IOS AND NOT XROS
   VERIFY HAVE_IPP)
+OCV_OPTION(WITH_ARMPL "Include ARM Performance Libraries support (auto-download)" OFF
+   VISIBLE_IF (AARCH64 OR ARM64) AND NOT WINRT AND NOT IOS AND NOT XROS
+   VERIFY HAVE_ARMPL)
 OCV_OPTION(WITH_VULKAN "Include Vulkan support" OFF
   VISIBLE_IF TRUE
   VERIFY HAVE_VULKAN)
@@ -249,6 +266,9 @@ OCV_OPTION(WITH_JPEGXL "Include JPEG XL support" OFF
 OCV_OPTION(WITH_WEBP "Include WebP support" ON
   VISIBLE_IF NOT WINRT
   VERIFY HAVE_WEBP)
+OCV_OPTION(WITH_HARFBUZZ "Enable HarfBuzz text shaping for putText/getTextSize" ON
+  VISIBLE_IF TRUE
+  VERIFY HAVE_HARFBUZZ)
 OCV_OPTION(WITH_OPENEXR "Include ILM support via OpenEXR" (WIN32 OR ANDROID OR APPLE) OR NOT CMAKE_CROSSCOMPILING
   VISIBLE_IF NOT APPLE_FRAMEWORK AND NOT WINRT
   VERIFY HAVE_OPENEXR)
@@ -390,9 +410,21 @@ OCV_OPTION(WITH_ANDROID_MEDIANDK "Use Android Media NDK for Video I/O (Android)"
 OCV_OPTION(WITH_ANDROID_NATIVE_CAMERA "Use Android NDK for Camera I/O (Android)" (ANDROID_NATIVE_API_LEVEL GREATER 23)
   VISIBLE_IF ANDROID
   VERIFY HAVE_ANDROID_NATIVE_CAMERA)
-OCV_OPTION(WITH_ONNX "Include Microsoft ONNX Runtime support" OFF
+OCV_OPTION(WITH_ONNXRUNTIME "Include Microsoft ONNX Runtime support" OFF
   VISIBLE_IF TRUE
   VERIFY HAVE_ONNX)
+OCV_OPTION(DOWNLOAD_ONNXRUNTIME "Download ONNX Runtime prebuilt binaries" OFF
+  VISIBLE_IF WITH_ONNXRUNTIME)
+OCV_OPTION(DOWNLOAD_ONNXRUNTIME_GPU "Download GPU-enabled ONNX Runtime prebuilt binaries when available" OFF
+  VISIBLE_IF WITH_ONNXRUNTIME)
+OCV_OPTION(ONNXRUNTIME_PREFER_STATIC "Prefer static ONNX Runtime library when available" ON
+  VISIBLE_IF WITH_ONNXRUNTIME)
+set(ONNXRUNTIME_VERSION "1.25.1" CACHE STRING "ONNX Runtime version to download (prebuilt binaries)")
+
+# Backward compatibility for previous option name.
+if(DEFINED WITH_ONNX AND WITH_ONNX AND NOT WITH_ONNXRUNTIME)
+  set(WITH_ONNXRUNTIME ON CACHE BOOL "Include Microsoft ONNX Runtime support" FORCE)
+endif()
 OCV_OPTION(WITH_TIMVX "Include Tim-VX support" OFF
   VISIBLE_IF TRUE
   VERIFY HAVE_TIMVX)
@@ -746,6 +778,7 @@ endif()
 include(cmake/OpenCVFindFrameworks.cmake)
 
 include(cmake/OpenCVFindLibsGrfmt.cmake)
+include(cmake/OpenCVFindHarfBuzz.cmake)
 include(cmake/OpenCVFindLibsGUI.cmake)
 include(cmake/OpenCVFindLibsVideo.cmake)
 include(cmake/OpenCVFindLibsPerf.cmake)
@@ -771,12 +804,12 @@ if(BUILD_JAVA)
   if(ANDROID)
     include(cmake/android/OpenCVDetectAndroidSDK.cmake)
   else()
-    include(cmake/OpenCVDetectApacheAnt.cmake)
-    if(ANT_EXECUTABLE AND NOT OPENCV_JAVA_IGNORE_ANT)
-      ocv_update(OPENCV_JAVA_SDK_BUILD_TYPE "ANT")
-    elseif(NOT ANDROID)
-      find_package(Java)
-      if(Java_FOUND)
+    find_package(Java QUIET)
+    if(Java_FOUND)
+      include(cmake/OpenCVDetectApacheAnt.cmake)
+      if(ANT_EXECUTABLE AND NOT OPENCV_JAVA_IGNORE_ANT)
+        ocv_update(OPENCV_JAVA_SDK_BUILD_TYPE "ANT")
+      else()
         include(UseJava)
         ocv_update(OPENCV_JAVA_SDK_BUILD_TYPE "JAVA")
       endif()
@@ -849,7 +882,7 @@ if(WITH_VTK)
   include(cmake/OpenCVDetectVTK.cmake)
 endif()
 
-if(WITH_ONNX)
+if(WITH_ONNXRUNTIME)
   include(cmake/FindONNX.cmake)
 endif()
 
@@ -888,6 +921,13 @@ if(HAVE_FASTCV)
   ocv_debug_message(STATUS "Enable FastCV acceleration")
   if(NOT ";${OpenCV_HAL};" MATCHES ";fastcv;")
     set(OpenCV_HAL "fastcv;${OpenCV_HAL}")
+  endif()
+endif()
+
+if(HAVE_ARMPL)
+  ocv_debug_message(STATUS "Enable ARMPL acceleration")
+  if(NOT ";${OpenCV_HAL};" MATCHES ";armpl;")
+    set(OpenCV_HAL "armpl_hal;${OpenCV_HAL}")
   endif()
 endif()
 
@@ -935,6 +975,14 @@ foreach(hal ${OpenCV_HAL})
       list(APPEND OpenCV_USED_HAL "fastcv (ver ${FASTCV_HAL_VERSION})")
     else()
       message(STATUS "FastCV: fastcv is not available, disabling fastcv...")
+    endif()
+  elseif(hal STREQUAL "armpl_hal")
+    if((ARM OR AARCH64 OR ARM64) AND NOT WINRT AND NOT IOS AND NOT XROS)
+      add_subdirectory(hal/armpl)
+      ocv_hal_register(ARMPL_HAL_LIBRARIES ARMPL_HAL_HEADERS ARMPL_HAL_INCLUDE_DIRS)
+      list(APPEND OpenCV_USED_HAL "ARMPL (ver ${ARMPL_HAL_VERSION})")
+    else()
+      message(STATUS "ARMPL: ARM Performance Libraries not available on this platform, disabling armpl...")
     endif()
   elseif(hal STREQUAL "kleidicv")
     add_subdirectory(hal/kleidicv)
@@ -1010,6 +1058,7 @@ ocv_register_modules()
 
 # Generate targets for documentation
 add_subdirectory(doc)
+add_subdirectory(docs_sphinx)
 
 # various data that is used by cv libraries and/or demo applications.
 # add_subdirectory(data)
@@ -1280,6 +1329,7 @@ ocv_build_features_string(docs_status
     IF TARGET doxygen_cpp THEN "doxygen"
     IF TARGET doxygen_python THEN "python"
     IF TARGET doxygen_javadoc THEN "javadoc"
+    IF TARGET sphinx THEN "sphinx"
     IF BUILD_opencv_js OR DEFINED OPENCV_JS_LOCATION THEN "js"
     ELSE "NO"
 )
@@ -1453,8 +1503,14 @@ if(WITH_SPNG)
   elseif(HAVE_SPNG)
     status("    PNG:" "${SPNG_LIBRARY} (ver ${SPNG_VERSION})")
   endif()
+
+  status("      Metadata Support:" "EXIF XMP ICC") # SPNG does not support cICP chunk.
 elseif(WITH_PNG OR HAVE_PNG)
-  status("    PNG:"  PNG_FOUND  THEN "${PNG_LIBRARY} (ver ${PNG_VERSION_STRING})" ELSE "build (ver ${PNG_VERSION_STRING})")
+  if(BUILD_PNG)
+    status("    PNG:" FALSE THEN "" ELSE "build (ver ${PNG_VERSION_STRING})")
+  else()
+    status("    PNG:"  PNG_FOUND  THEN "${PNG_LIBRARY} (ver ${PNG_VERSION_STRING})" ELSE "build (ver ${PNG_VERSION_STRING})")
+  endif()
   if(BUILD_PNG AND PNG_HARDWARE_OPTIMIZATIONS)
     status("      SIMD Support Request:" "YES")
     if(PNG_INTEL_SSE)
@@ -1473,11 +1529,21 @@ elseif(WITH_PNG OR HAVE_PNG)
     endif()
   elseif(PNG_LOONGARCH_LSX)
     status("      SIMD Support:" "YES (LoongArch LSX)")
+  elseif(PNG_RISCV_RVV)
+    status("      SIMD Support:" "YES (RISC-V RVV)")
   else()
     status("      SIMD Support:" "NO")
   endif()
   elseif(BUILD_PNG)
     status("      SIMD Support Request:" "NO")
+  endif()
+
+  if(NOT (PNG_VERSION_STRING VERSION_LESS "1.6.45"))
+    status("      Metadata Support:" "EXIF XMP ICC cICP")
+  elseif(NOT (PNG_VERSION_STRING VERSION_LESS "1.6.31"))
+    status("      Metadata Support:" "EXIF XMP ICC")
+  else()
+    status("      Metadata Support:" "XMP ICC")
   endif()
 endif()
 
@@ -1635,6 +1701,12 @@ if(WITH_GPHOTO2 OR HAVE_GPHOTO2)
   status("    gPhoto2:"        HAVE_GPHOTO2        THEN "YES"                                 ELSE NO)
 endif()
 
+if(OBSENSOR_USE_ORBBEC_SDK OR HAVE_OBSENSOR_ORBBEC_SDK)
+  status("    Orbbec SDK:" HAVE_OBSENSOR_ORBBEC_SDK  THEN "YES (version ${ORBBEC_SDK_VERSION})" ELSE NO)
+else()
+  status("    Orbbec:" HAVE_OBSENSOR THEN "YES" ELSE NO)
+endif()
+
 if(ANDROID)
   status("   MEDIANDK:"         HAVE_ANDROID_MEDIANDK THEN "YES"                              ELSE NO)
   status("   NDK Camera:"       HAVE_ANDROID_NATIVE_CAMERA THEN "YES"                         ELSE NO)
@@ -1673,6 +1745,8 @@ endif()
 status("")
 status("  Other third-party libraries:")
 
+status("    HarfBuzz:"   HAVE_HARFBUZZ THEN "${HARFBUZZ_VERSION}" ELSE "NO")
+
 if(WITH_IPP AND HAVE_IPP)
   status("    Intel IPP:" "${IPP_VERSION_STR} [${IPP_VERSION_MAJOR}.${IPP_VERSION_MINOR}.${IPP_VERSION_BUILD}]")
   status("           at:" "${IPP_ROOT_DIR}")
@@ -1689,6 +1763,12 @@ if(WITH_IPP AND HAVE_IPP)
   else()
     status("    Intel IPP IW:"   NO)
   endif()
+endif()
+
+if(WITH_ARMPL AND HAVE_ARMPL)
+  status("    ARM Perf Lib:" "${ARMPL_VERSION_STR}")
+  status("           at:" "${ARMPL_ROOT_DIR}")
+  status("      variant:" "${ARMPL_LIB_NAME}")
 endif()
 
 if(WITH_VA OR HAVE_VA)
@@ -1761,12 +1841,51 @@ if(BUILD_opencv_dnn AND OPENCV_DNN_BACKEND_DEFAULT)
     status("    Default DNN backend:" ${OPENCV_DNN_BACKEND_DEFAULT})
 endif()
 
+if(BUILD_opencv_dnn AND (OPENCV_DNN_MLAS_ENABLED OR OPENCV_DNN_MLAS_SKIP_REASON))
+  status("    DNN MLAS:" OPENCV_DNN_MLAS_ENABLED THEN "YES (SGEMM-only, vendored)"
+                                                 ELSE "NO (${OPENCV_DNN_MLAS_SKIP_REASON})")
+  if(OPENCV_DNN_MLAS_ENABLED)
+    if(MLAS_X86_64)
+      status("      ASM kernels:" "YES (X86_64: SSE2, AVX, FMA3, AVX512F)")
+    elseif(MLAS_X86)
+      status("      ASM kernels:" "YES (X86: SSE2, AVX)")
+    elseif(MLAS_ARM64)
+      status("      ASM kernels:" "YES (ARM64: NEON SGEMM, NEON SGEMV)")
+    elseif(MLAS_ARM)
+      status("      ASM kernels:" "NO (ARM 32-bit, scalar C++ sgemmc.cpp)")
+    elseif(MLAS_LOONGARCH64)
+      status("      ASM kernels:" "YES (LoongArch: LSX, LASX)")
+    elseif(MLAS_POWER)
+      status("      ASM kernels:" MLAS_HAS_POWER10 AND MLAS_HAS_ASM
+                                  THEN "YES (POWER10 PackA)"
+                                  ELSE "NO (POWER base, no .S kernels)")
+    elseif(MLAS_S390X)
+      status("      ASM kernels:" "NO (S390X ZVECTOR via intrinsics)")
+    elseif(MLAS_RISCV64)
+      status("      ASM kernels:" MLAS_HAS_RISCV64_RVV
+                                  THEN "NO (RISCV64 with RVV intrinsics)"
+                                  ELSE "NO (RISCV64 scalar fallback)")
+    elseif(MLAS_WASM)
+      status("      ASM kernels:" "NO (WASM scalar fallback)")
+    else()
+      status("      ASM kernels:" "NO (scalar fallback)")
+    endif()
+  endif()
+endif()
+
 if(WITH_EIGEN OR HAVE_EIGEN)
   status("    Eigen:"      HAVE_EIGEN       THEN "YES (ver ${EIGEN_WORLD_VERSION}.${EIGEN_MAJOR_VERSION}.${EIGEN_MINOR_VERSION})" ELSE NO)
 endif()
 
+if(WITH_CLP OR HAVE_CLP)
+  status("    CLP:"        HAVE_CLP         THEN "YES" ELSE NO)
+endif()
+
 if(WITH_FASTCV OR HAVE_FASTCV)
   status("    FastCV:"     HAVE_FASTCV      THEN "YES (${FASTCV_LIBRARY})" ELSE "NO")
+endif()
+if(WITH_ARMPL OR HAVE_ARMPL)
+  status("    ARM Perf Lib:"     HAVE_ARMPL      THEN "YES (${ARMPL_LIBRARY})" ELSE "NO")
 endif()
 
 status("    Custom HAL:" OpenCV_USED_HAL  THEN "YES (${OpenCV_USED_HAL})" ELSE "NO")
@@ -1794,6 +1913,11 @@ if(WITH_CUDA OR HAVE_CUDA)
  if(WITH_CUDNN OR HAVE_CUDNN)
     status("")
     status("  cuDNN:" HAVE_CUDNN THEN "YES (ver ${CUDNN_VERSION})" ELSE NO)
+endif()
+
+ if(WITH_CUDNNJIT OR HAVE_CUDNNJIT)
+    status("")
+    status("  cuDNN JIT:" HAVE_CUDNNJIT THEN "YES (ver ${CUDNN_VERSION})" ELSE NO)
 endif()
 
 if(WITH_VULKAN OR HAVE_VULKAN)
@@ -1840,10 +1964,10 @@ if(WITH_OPENCL OR HAVE_OPENCL)
   endif()
 endif()
 
-if(WITH_ONNX OR HAVE_ONNX)
+if(DEFINED WITH_ONNXRUNTIME OR DEFINED HAVE_ONNXRUNTIME)
   status("")
-  status("  ONNX:"     HAVE_ONNX THEN "YES" ELSE "NO")
-  if(HAVE_ONNX)
+  status("  ONNX Runtime:" HAVE_ONNXRUNTIME THEN "YES (ver ${ONNX_VERSION})" ELSE "NO")
+  if(HAVE_ONNXRUNTIME)
     status("    Include path:"  ONNX_INCLUDE_DIR THEN "${ONNX_INCLUDE_DIR}" ELSE "NO")
     status("    Link libraries:" ONNX_LIBRARIES THEN "${ONNX_LIBRARIES}" ELSE "NO")
   endif()
@@ -1885,7 +2009,7 @@ if(BUILD_JAVA)
     status("    Java:"        Java_FOUND     THEN "YES (ver ${Java_VERSION})"                                      ELSE NO)
     status("    JNI:"         JNI_INCLUDE_DIRS    THEN "${JNI_INCLUDE_DIRS}"                                       ELSE NO)
   endif()
-  status("    Java wrappers:" HAVE_opencv_java                                                            THEN "YES (${OPENCV_JAVA_SDK_BUILD_TYPE})" ELSE NO)
+  status("    Java wrappers:" HAVE_opencv_java    THEN "YES (${OPENCV_JAVA_SDK_BUILD_TYPE})" ELSE NO)
   status("    Java tests:"    BUILD_TESTS AND (opencv_test_java_BINARY_DIR OR opencv_test_android_BINARY_DIR) THEN YES ELSE NO)
 endif()
 

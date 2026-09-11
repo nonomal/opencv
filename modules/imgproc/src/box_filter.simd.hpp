@@ -44,6 +44,7 @@
 
 #include "precomp.hpp"
 #include "opencv2/core/hal/intrin.hpp"
+#include <cstddef>
 
 namespace cv {
 CV_CPU_OPTIMIZATION_NAMESPACE_BEGIN
@@ -68,12 +69,13 @@ template<typename T, typename ST>
 struct RowSum :
         public BaseRowFilter
 {
-    RowSum( int _ksize, int _anchor ) :
-        BaseRowFilter()
+    RowSum( int _ksize, int _anchor )
     {
         ksize = _ksize;
         anchor = _anchor;
     }
+
+    bool isStateless() const CV_OVERRIDE { return true; }
 
     virtual void operator()(const uchar* src, uchar* dst, int width, int cn) CV_OVERRIDE
     {
@@ -179,8 +181,7 @@ template<typename ST, typename T>
 struct ColumnSum :
         public BaseColumnFilter
 {
-    ColumnSum( int _ksize, int _anchor, double _scale ) :
-        BaseColumnFilter()
+    ColumnSum( int _ksize, int _anchor, double _scale )
     {
         ksize = _ksize;
         anchor = _anchor;
@@ -279,8 +280,7 @@ template<>
 struct ColumnSum<int, uchar> :
         public BaseColumnFilter
 {
-    ColumnSum( int _ksize, int _anchor, double _scale ) :
-        BaseColumnFilter()
+    ColumnSum( int _ksize, int _anchor, double _scale )
     {
         ksize = _ksize;
         anchor = _anchor;
@@ -435,8 +435,7 @@ public BaseColumnFilter
 {
     enum { SHIFT = 23 };
 
-    ColumnSum( int _ksize, int _anchor, double _scale ) :
-    BaseColumnFilter()
+    ColumnSum( int _ksize, int _anchor, double _scale )
     {
         ksize = _ksize;
         anchor = _anchor;
@@ -612,8 +611,7 @@ template<>
 struct ColumnSum<int, short> :
         public BaseColumnFilter
 {
-    ColumnSum( int _ksize, int _anchor, double _scale ) :
-        BaseColumnFilter()
+    ColumnSum( int _ksize, int _anchor, double _scale )
     {
         ksize = _ksize;
         anchor = _anchor;
@@ -762,8 +760,7 @@ template<>
 struct ColumnSum<int, ushort> :
         public BaseColumnFilter
 {
-    ColumnSum( int _ksize, int _anchor, double _scale ) :
-        BaseColumnFilter()
+    ColumnSum( int _ksize, int _anchor, double _scale )
     {
         ksize = _ksize;
         anchor = _anchor;
@@ -909,8 +906,7 @@ template<>
 struct ColumnSum<int, int> :
         public BaseColumnFilter
 {
-    ColumnSum( int _ksize, int _anchor, double _scale ) :
-        BaseColumnFilter()
+    ColumnSum( int _ksize, int _anchor, double _scale )
     {
         ksize = _ksize;
         anchor = _anchor;
@@ -1043,8 +1039,7 @@ template<>
 struct ColumnSum<int, float> :
         public BaseColumnFilter
 {
-    ColumnSum( int _ksize, int _anchor, double _scale ) :
-        BaseColumnFilter()
+    ColumnSum( int _ksize, int _anchor, double _scale )
     {
         ksize = _ksize;
         anchor = _anchor;
@@ -1513,7 +1508,7 @@ void BlockSum(const Mat& _src, Mat& _dst, Size ksize, Point anchor, const Size &
                                       borderLeft*sizeof(T), inplace);
         }
         else
-            ref = (const T*)(src+(srcY-roi.y)*srcStep);
+            ref = (const T*)(src+(srcY-roi.y)*(ptrdiff_t)srcStep);
 
         S = ref;
         R = (T*)alignPtr(border, VEC_ALIGN);
@@ -1699,12 +1694,13 @@ template<typename T, typename ST>
 struct SqrRowSum :
         public BaseRowFilter
 {
-    SqrRowSum( int _ksize, int _anchor ) :
-        BaseRowFilter()
+    SqrRowSum( int _ksize, int _anchor )
     {
         ksize = _ksize;
         anchor = _anchor;
     }
+
+    bool isStateless() const CV_OVERRIDE { return true; }
 
     virtual void operator()(const uchar* src, uchar* dst, int width, int cn) CV_OVERRIDE
     {

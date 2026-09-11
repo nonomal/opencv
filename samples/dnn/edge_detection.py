@@ -99,19 +99,18 @@ def loadModel(args, engine):
     return net
 
 def apply_dexined(model, image):
+    t0 = cv.getTickCount()
     out = model.forward()
+    t = (cv.getTickCount() - t0) / cv.getTickFrequency()
     result,_ = post_processing(out, image.shape[:2])
-    t, _ = model.getPerfProfile()
-    label = 'Inference time: %.2f ms' % (t * 1000.0 / cv.getTickFrequency())
+    label = 'Inference time: %.2f ms' % (t * 1000.0)
     cv.putText(image, label, (0, 15), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255))
     cv.putText(result, label, (0, 15), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255))
     cv.imshow("Output", result)
 
 def main(func_args=None):
     args = get_args_parser(func_args)
-    engine = cv.dnn.ENGINE_AUTO
-    if args.backend != "default" or args.target != "cpu":
-        engine = cv.dnn.ENGINE_CLASSIC
+    engine = cv.dnn.ENGINE_OPENCV
 
     cap = cv.VideoCapture(cv.samples.findFile(args.input) if args.input else 0)
     if not cap.isOpened():

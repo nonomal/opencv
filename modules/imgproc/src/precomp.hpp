@@ -44,6 +44,7 @@
 #define __OPENCV_PRECOMP_H__
 
 #include "opencv2/imgproc.hpp"
+#include "opencv2/geometry.hpp"
 #include "opencv2/core/utility.hpp"
 
 #include "opencv2/core/private.hpp"
@@ -51,6 +52,7 @@
 #include "opencv2/core/hal/hal.hpp"
 #include "opencv2/core/check.hpp"
 #include "opencv2/core/utils/buffer_area.private.hpp"
+#include "opencv2/core/utils/logger.hpp"
 #include "opencv2/imgproc/hal/hal.hpp"
 #include "hal_replacement.hpp"
 

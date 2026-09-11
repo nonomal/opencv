@@ -102,11 +102,18 @@ template<typename _Tp, size_t fixed_size = 1024/sizeof(_Tp)+8> class AutoBuffer
 {
 public:
     typedef _Tp value_type;
+    typedef  std::size_t size_type;
+    typedef  std::ptrdiff_t difference_type;
+    typedef const _Tp* const_iterator;
+    typedef _Tp* iterator;
+    typedef const _Tp& const_reference;
+    typedef _Tp& reference;
 
     //! the default constructor
     AutoBuffer();
     //! constructor taking the real buffer size
     explicit AutoBuffer(size_t _size);
+    AutoBuffer(size_t _size, const _Tp& value);
 
     //! the copy constructor
     AutoBuffer(const AutoBuffer<_Tp, fixed_size>& buf);
@@ -120,10 +127,18 @@ public:
     void allocate(size_t _size);
     //! deallocates the buffer if it was dynamically allocated
     void deallocate();
-    //! resizes the buffer and preserves the content
+    //! resizes the buffer and preserves the content. A grown tail is left as `new _Tp[]` leaves it:
+    //! default-constructed for class types, UNINITIALIZED (raw) for trivial types. Use the two-arg
+    //! overload if you need every new slot set to a value.
     void resize(size_t _size);
+    //! resizes the buffer, preserving the content and setting every newly exposed slot to `value`
+    void resize(size_t _size, const _Tp& value);
+    //! grows the capacity to at least _cap (preserving the content); never shrinks
+    void reserve(size_t _cap);
     //! returns the current buffer size
     size_t size() const;
+    //! returns the current capacity (allocated element count; always >= size())
+    size_t capacity() const;
     //! returns pointer to the real buffer, stack-allocated or heap-allocated
     inline _Tp* data() { return ptr; }
     //! returns read-only pointer to the real buffer, stack-allocated or heap-allocated
@@ -140,12 +155,34 @@ public:
     //! returns a reference to the element at specified location. No bounds checking is performed in Release builds.
     inline const _Tp& operator[] (size_t i) const { CV_DbgCheckLT(i, sz, "out of range"); return ptr[i]; }
 #endif
-
+public:
+    inline iterator begin() { return data(); }
+    inline const_iterator begin() const { return data(); }
+    inline const_iterator cbegin() const { return begin(); }
+    inline iterator end() { return data()+size(); }
+    inline const_iterator end() const { return data()+size(); }
+    inline const_iterator cend() const { return end(); }
+public:
+    inline bool empty() const { return !size(); }
+    inline void clear() {resize(0);}
+    inline const_reference front() const { return (*this)[0] ;}
+    inline reference front() { return (*this)[0] ;}
+    inline const_reference back() const { CV_DbgCheckGT(sz, (size_t)0, "out of range"); return (*this)[size()-1] ;}
+    inline reference back() { CV_DbgCheckGT(sz, (size_t)0, "out of range"); return (*this)[size()-1] ;}
+public:
+    inline void push_back( const _Tp& value )
+    { if (sz >= cap) reserve(cap + cap/2 > sz ? cap + cap/2 : sz + 1); ptr[sz++] = value; }
+    inline void push_back( _Tp&& value )
+    { if (sz >= cap) reserve(cap + cap/2 > sz ? cap + cap/2 : sz + 1); ptr[sz++] = std::move(value); }
+    inline void emplace_back( _Tp&& value ) {push_back(value);}
+    inline void pop_back() {CV_DbgCheckGT(sz, (size_t)0, "out of range"); resize(size()-1);}
 protected:
     //! pointer to the real buffer, can point to buf if the buffer is small enough
     _Tp* ptr;
     //! size of the real buffer
     size_t sz;
+    //! capacity - allocated element count (>= sz). Starts at fixed_size (the local buf), grows on demand.
+    size_t cap;
     //! pre-allocated buffer. At least 1 element to confirm C++ standard requirements
     _Tp buf[(fixed_size > 0) ? fixed_size : 1];
 };
@@ -452,7 +489,7 @@ std::cout << tm;
 @endcode
 */
 
-static inline
+inline
 std::ostream& operator << (std::ostream& out, const TickMeter& tm)
 {
     return out << tm.getTimeSec() << "sec";
@@ -512,7 +549,7 @@ The function returns the aligned pointer of the same type as the input pointer:
 @param ptr Aligned pointer.
 @param n Alignment size that must be a power of two.
  */
-template<typename _Tp> static inline _Tp* alignPtr(_Tp* ptr, int n=(int)sizeof(_Tp))
+template<typename _Tp> inline _Tp* alignPtr(_Tp* ptr, int n=(int)sizeof(_Tp))
 {
     CV_DbgAssert((n & (n - 1)) == 0); // n is a power of 2
     return (_Tp*)(((size_t)ptr + n-1) & -n);
@@ -525,7 +562,7 @@ The function returns the minimum number that is greater than or equal to sz and 
 @param sz Buffer size to align.
 @param n Alignment size that must be a power of two.
  */
-static inline size_t alignSize(size_t sz, int n)
+inline size_t alignSize(size_t sz, int n)
 {
     CV_DbgAssert((n & (n - 1)) == 0); // n is a power of 2
     return (sz + n-1) & -n;
@@ -537,13 +574,13 @@ Use this function instead of `ceil((float)a / b)` expressions.
 
 @sa alignSize
 */
-static inline int divUp(int a, unsigned int b)
+inline int divUp(int a, unsigned int b)
 {
     CV_DbgAssert(a >= 0);
     return (a + b - 1) / b;
 }
 /** @overload */
-static inline size_t divUp(size_t a, unsigned int b)
+inline size_t divUp(size_t a, unsigned int b)
 {
     return (a + b - 1) / b;
 }
@@ -554,13 +591,13 @@ Use this function instead of `ceil((float)a / b) * b` expressions.
 
 @sa divUp
 */
-static inline int roundUp(int a, unsigned int b)
+inline int roundUp(int a, unsigned int b)
 {
     CV_DbgAssert(a >= 0);
     return a + b - 1 - (a + b -1) % b;
 }
 /** @overload */
-static inline size_t roundUp(size_t a, unsigned int b)
+inline size_t roundUp(size_t a, unsigned int b)
 {
     return a + b - 1 - (a + b - 1) % b;
 }
@@ -571,32 +608,32 @@ Usage: `isAligned<sizeof(int)>(...)`
 
 @note Alignment(N) must be a power of 2 (2**k, 2^k)
 */
-template<int N, typename T> static inline
+template<int N, typename T> inline
 bool isAligned(const T& data)
 {
     CV_StaticAssert((N & (N - 1)) == 0, "");  // power of 2
     return (((size_t)data) & (N - 1)) == 0;
 }
 /** @overload */
-template<int N> static inline
+template<int N> inline
 bool isAligned(const void* p1)
 {
     return isAligned<N>((size_t)p1);
 }
 /** @overload */
-template<int N> static inline
+template<int N> inline
 bool isAligned(const void* p1, const void* p2)
 {
     return isAligned<N>(((size_t)p1)|((size_t)p2));
 }
 /** @overload */
-template<int N> static inline
+template<int N> inline
 bool isAligned(const void* p1, const void* p2, const void* p3)
 {
     return isAligned<N>(((size_t)p1)|((size_t)p2)|((size_t)p3));
 }
 /** @overload */
-template<int N> static inline
+template<int N> inline
 bool isAligned(const void* p1, const void* p2, const void* p3, const void* p4)
 {
     return isAligned<N>(((size_t)p1)|((size_t)p2)|((size_t)p3)|((size_t)p4));
@@ -635,7 +672,7 @@ The function returns true if the optimized code is enabled. Otherwise, it return
  */
 CV_EXPORTS_W bool useOptimized();
 
-static inline size_t getElemSize(int type) { return (size_t)CV_ELEM_SIZE(type); }
+inline size_t getElemSize(int type) { return (size_t)CV_ELEM_SIZE(type); }
 
 /////////////////////////////// Parallel Primitives //////////////////////////////////
 
@@ -676,7 +713,7 @@ public:
 };
 
 //! @ingroup core_parallel
-static inline
+inline
 void parallel_for_(const Range& range, std::function<void(const Range&)> functor, double nstripes=-1.)
 {
     parallel_for_(range, ParallelLoopBodyLambdaWrapper(functor), nstripes);
@@ -1043,22 +1080,32 @@ template<typename _Tp, size_t fixed_size> inline
 AutoBuffer<_Tp, fixed_size>::AutoBuffer()
 {
     ptr = buf;
-    sz = fixed_size;
+    sz = 0;
+    cap = fixed_size;
 }
 
 template<typename _Tp, size_t fixed_size> inline
 AutoBuffer<_Tp, fixed_size>::AutoBuffer(size_t _size)
 {
     ptr = buf;
-    sz = fixed_size;
+    sz = 0;
+    cap = fixed_size;
     allocate(_size);
+}
+
+template<typename _Tp, size_t fixed_size> inline
+AutoBuffer<_Tp, fixed_size>::AutoBuffer(size_t _size, const _Tp& value)
+                            :AutoBuffer<_Tp, fixed_size>(_size)
+{
+    std::fill(begin(), end(), value);
 }
 
 template<typename _Tp, size_t fixed_size> inline
 AutoBuffer<_Tp, fixed_size>::AutoBuffer(const AutoBuffer<_Tp, fixed_size>& abuf )
 {
     ptr = buf;
-    sz = fixed_size;
+    sz = 0;
+    cap = fixed_size;
     allocate(abuf.size());
     for( size_t i = 0; i < sz; i++ )
         ptr[i] = abuf.ptr[i];
@@ -1084,17 +1131,8 @@ AutoBuffer<_Tp, fixed_size>::~AutoBuffer()
 template<typename _Tp, size_t fixed_size> inline void
 AutoBuffer<_Tp, fixed_size>::allocate(size_t _size)
 {
-    if(_size <= sz)
-    {
-        sz = _size;
-        return;
-    }
-    deallocate();
-    sz = _size;
-    if(_size > fixed_size)
-    {
-        ptr = new _Tp[_size];
-    }
+    resize(_size);      // set the size (resize grows capacity as needed, preserves content); the new
+                        // tail is raw for trivial types - AutoBuffer is a scratch buffer, callers fill it
 }
 
 template<typename _Tp, size_t fixed_size> inline void
@@ -1104,37 +1142,71 @@ AutoBuffer<_Tp, fixed_size>::deallocate()
     {
         delete[] ptr;
         ptr = buf;
-        sz = fixed_size;
     }
+    sz = 0;
+    cap = fixed_size;
+}
+
+template<typename _Tp, size_t fixed_size> inline void
+AutoBuffer<_Tp, fixed_size>::reserve(size_t _cap)
+{
+    if( _cap <= cap )       // never shrink; _cap > cap implies _cap > fixed_size, so always heap
+        return;
+    _Tp* prevptr = ptr;
+    ptr = new _Tp[_cap];
+    // only the LIVE elements [0, sz) are copied - for trivial types the inline buf tail beyond sz
+    // is intentionally raw (AutoBuffer is a scratch buffer), which gcc's -Wmaybe-uninitialized
+    // cannot prove when it inlines a grow-from-inline-storage call chain; the annotation below
+    // documents exactly that, it does not change behavior
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+    for( size_t i = 0; i < sz; i++ )    // preserve the live elements
+        ptr[i] = prevptr[i];
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+    if( prevptr != buf )
+        delete[] prevptr;
+    cap = _cap;
 }
 
 template<typename _Tp, size_t fixed_size> inline void
 AutoBuffer<_Tp, fixed_size>::resize(size_t _size)
 {
-    if(_size <= sz)
+    if(_size <= sz)         // shrink: keep the capacity and the surviving content
     {
         sz = _size;
         return;
     }
-    size_t i, prevsize = sz, minsize = MIN(prevsize, _size);
-    _Tp* prevptr = ptr;
-
-    ptr = _size > fixed_size ? new _Tp[_size] : buf;
+    if(_size > cap)         // grow with geometric slack (like push_back) so incremental
+        reserve(cap + cap/2 > _size ? cap + cap/2 : _size);   // resize(size()+delta) loops don't realloc every step
     sz = _size;
+    // !!! DO NOT ADD ANY INITIALIZATION OF THE NEW TAIL HERE (e.g. `for(i=sz..) ptr[i]=_Tp();`) !!!
+    // AutoBuffer IS A RAW SCRATCH BUFFER. Value-initializing the tail zero-fills it on EVERY grow, which
+    // silently dominates the cost of small allocations (measured: ~1.2us per few-KB resize) and there is
+    // NOTHING to init anyway - callers write before they read. Class-type elements are already
+    // constructed by `new _Tp[]` / the inline array. If you truly need filled slots, call the two-arg
+    // overload resize(size, value) EXPLICITLY.
+}
 
-    if( ptr != prevptr )
-        for( i = 0; i < minsize; i++ )
-            ptr[i] = prevptr[i];
-    for( i = prevsize; i < _size; i++ )
-        ptr[i] = _Tp();
-
-    if( prevptr != buf )
-        delete[] prevptr;
+template<typename _Tp, size_t fixed_size> inline void
+AutoBuffer<_Tp, fixed_size>::resize(size_t _size, const _Tp& value)
+{
+    const size_t old = sz;
+    resize(_size);
+    for( size_t i = old; i < _size; i++ )   // fill every newly exposed slot
+        ptr[i] = value;
 }
 
 template<typename _Tp, size_t fixed_size> inline size_t
 AutoBuffer<_Tp, fixed_size>::size() const
 { return sz; }
+
+template<typename _Tp, size_t fixed_size> inline size_t
+AutoBuffer<_Tp, fixed_size>::capacity() const
+{ return cap; }
 
 //! @endcond
 

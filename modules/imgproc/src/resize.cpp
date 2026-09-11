@@ -58,6 +58,8 @@
 #include "opencv2/core/softfloat.hpp"
 #include "fixedpoint.inl.hpp"
 
+#include <iostream>
+
 using namespace cv;
 
 namespace
@@ -1173,18 +1175,17 @@ resizeNN( const Mat& src, Mat& dst, double fx, double fy )
 class resizeNN_bitexactInvoker : public ParallelLoopBody
 {
 public:
-    resizeNN_bitexactInvoker(const Mat& _src, Mat& _dst, int* _x_ofse, int _ify, int _ify0)
-        : src(_src), dst(_dst), x_ofse(_x_ofse), ify(_ify), ify0(_ify0) {}
+    resizeNN_bitexactInvoker(const Mat& _src, Mat& _dst, int* _x_ofse, int* _y_ofse)
+        : src(_src), dst(_dst), x_ofse(_x_ofse), y_ofse(_y_ofse) {}
 
     virtual void operator() (const Range& range) const CV_OVERRIDE
     {
-        Size ssize = src.size(), dsize = dst.size();
+        Size dsize = dst.size();
         int pix_size = (int)src.elemSize();
         for( int y = range.start; y < range.end; y++ )
         {
             uchar* D = dst.ptr(y);
-            int _sy = (ify * y + ify0) >> 16;
-            int sy = std::min(_sy, ssize.height-1);
+            int sy = y_ofse[y];
             const uchar* S = src.ptr(sy);
 
             int x = 0;
@@ -1259,30 +1260,39 @@ private:
     const Mat& src;
     Mat& dst;
     int* x_ofse;
-    const int ify;
-    const int ify0;
+    int* y_ofse;
 };
+
+static void resizeNN_bitexact_tab(int src_dim, int dst_dim, int* ofse)
+{
+    // Match Pillow's nearest-neighbor resize path: start at half a pixel,
+    // truncate the current coordinate, then increment by scale. softdouble
+    // keeps the IEEE-754 rounding deterministic across platforms.
+    const softdouble scale = softdouble(src_dim) / softdouble(dst_dim);
+    softdouble f = scale * softdouble(0.5);
+    for( int i = 0; i < dst_dim; i++ )
+    {
+        ofse[i] = std::min(cvFloor(f), src_dim-1);
+        f += scale;
+    }
+}
 
 static void resizeNN_bitexact( const Mat& src, Mat& dst, double /*fx*/, double /*fy*/ )
 {
     Size ssize = src.size(), dsize = dst.size();
-    int ifx = ((ssize.width << 16) + dsize.width / 2) / dsize.width; // 16bit fixed-point arithmetic
-    int ifx0 = ifx / 2 - ssize.width % 2;                       // This method uses center pixel coordinate as Pillow and scikit-images do.
-    int ify = ((ssize.height << 16) + dsize.height / 2) / dsize.height;
-    int ify0 = ify / 2 - ssize.height % 2;
 
     cv::utils::BufferArea area;
     int* x_ofse = 0;
+    int* y_ofse = 0;
     area.allocate(x_ofse, dsize.width, CV_SIMD_WIDTH);
+    area.allocate(y_ofse, dsize.height, CV_SIMD_WIDTH);
     area.commit();
 
-    for( int x = 0; x < dsize.width; x++ )
-    {
-        int sx = (ifx * x + ifx0) >> 16;
-        x_ofse[x] = std::min(sx, ssize.width-1);    // offset in element (not byte)
-    }
+    resizeNN_bitexact_tab(ssize.width, dsize.width, x_ofse);
+    resizeNN_bitexact_tab(ssize.height, dsize.height, y_ofse);
+
     Range range(0, dsize.height);
-    resizeNN_bitexactInvoker invoker(src, dst, x_ofse, ify, ify0);
+    resizeNN_bitexactInvoker invoker(src, dst, x_ofse, y_ofse);
     parallel_for_(range, invoker, dst.total()/(double)(1<<16));
 }
 
@@ -3626,198 +3636,6 @@ static bool ocl_resize( InputArray _src, OutputArray _dst, Size dsize,
 
 #endif
 
-#ifdef HAVE_IPP
-#define IPP_RESIZE_PARALLEL 1
-
-#ifdef HAVE_IPP_IW
-class ipp_resizeParallel: public ParallelLoopBody
-{
-public:
-    ipp_resizeParallel(::ipp::IwiImage &src, ::ipp::IwiImage &dst, bool &ok):
-        m_src(src), m_dst(dst), m_ok(ok) {}
-    ~ipp_resizeParallel()
-    {
-    }
-
-    void Init(IppiInterpolationType inter)
-    {
-        iwiResize.InitAlloc(m_src.m_size, m_dst.m_size, m_src.m_dataType, m_src.m_channels, inter, ::ipp::IwiResizeParams(0, 0, 0.75, 4), ippBorderRepl);
-
-        m_ok = true;
-    }
-
-    virtual void operator() (const Range& range) const CV_OVERRIDE
-    {
-        CV_INSTRUMENT_REGION_IPP();
-
-        if(!m_ok)
-            return;
-
-        try
-        {
-            ::ipp::IwiTile tile = ::ipp::IwiRoi(0, range.start, m_dst.m_size.width, range.end - range.start);
-            CV_INSTRUMENT_FUN_IPP(iwiResize, m_src, m_dst, ippBorderRepl, tile);
-        }
-        catch(const ::ipp::IwException &)
-        {
-            m_ok = false;
-            return;
-        }
-    }
-private:
-    ::ipp::IwiImage &m_src;
-    ::ipp::IwiImage &m_dst;
-
-    mutable ::ipp::IwiResize iwiResize;
-
-    volatile bool &m_ok;
-    const ipp_resizeParallel& operator= (const ipp_resizeParallel&);
-};
-
-class ipp_resizeAffineParallel: public ParallelLoopBody
-{
-public:
-    ipp_resizeAffineParallel(::ipp::IwiImage &src, ::ipp::IwiImage &dst, bool &ok):
-        m_src(src), m_dst(dst), m_ok(ok) {}
-    ~ipp_resizeAffineParallel()
-    {
-    }
-
-    void Init(IppiInterpolationType inter, double scaleX, double scaleY)
-    {
-        double shift = (inter == ippNearest)?-1e-10:-0.5;
-        double coeffs[2][3] = {
-            {scaleX, 0,      shift+0.5*scaleX},
-            {0,      scaleY, shift+0.5*scaleY}
-        };
-
-        iwiWarpAffine.InitAlloc(m_src.m_size, m_dst.m_size, m_src.m_dataType, m_src.m_channels, coeffs, iwTransForward, inter, ::ipp::IwiWarpAffineParams(0, 0, 0.75), ippBorderRepl);
-
-        m_ok = true;
-    }
-
-    virtual void operator() (const Range& range) const CV_OVERRIDE
-    {
-        CV_INSTRUMENT_REGION_IPP();
-
-        if(!m_ok)
-            return;
-
-        try
-        {
-            ::ipp::IwiTile tile = ::ipp::IwiRoi(0, range.start, m_dst.m_size.width, range.end - range.start);
-            CV_INSTRUMENT_FUN_IPP(iwiWarpAffine, m_src, m_dst, tile);
-        }
-        catch(const ::ipp::IwException &)
-        {
-            m_ok = false;
-            return;
-        }
-    }
-private:
-    ::ipp::IwiImage &m_src;
-    ::ipp::IwiImage &m_dst;
-
-    mutable ::ipp::IwiWarpAffine iwiWarpAffine;
-
-    volatile bool &m_ok;
-    const ipp_resizeAffineParallel& operator= (const ipp_resizeAffineParallel&);
-};
-#endif
-
-static bool ipp_resize(const uchar * src_data, size_t src_step, int src_width, int src_height,
-            uchar * dst_data, size_t dst_step, int dst_width, int dst_height, double inv_scale_x, double inv_scale_y,
-            int depth, int channels, int interpolation)
-{
-#ifdef HAVE_IPP_IW
-    CV_INSTRUMENT_REGION_IPP();
-
-    IppDataType           ippDataType = ippiGetDataType(depth);
-    IppiInterpolationType ippInter    = ippiGetInterpolation(interpolation);
-    if((int)ippInter < 0)
-        return false;
-
-    // Resize which doesn't match OpenCV exactly
-    if (!cv::ipp::useIPP_NotExact())
-    {
-        if (ippInter == ippNearest || ippInter == ippSuper || (ippDataType == ipp8u && ippInter == ippLinear))
-            return false;
-    }
-
-    if(ippInter != ippLinear && ippDataType == ipp64f)
-        return false;
-
-#if IPP_VERSION_X100 < 201801
-    // Degradations on int^2 linear downscale
-    if (ippDataType != ipp64f && ippInter == ippLinear && inv_scale_x < 1 && inv_scale_y < 1) // if downscale
-    {
-        int scale_x = (int)(1 / inv_scale_x);
-        int scale_y = (int)(1 / inv_scale_y);
-        if (1 / inv_scale_x - scale_x < DBL_EPSILON && 1 / inv_scale_y - scale_y < DBL_EPSILON) // if integer
-        {
-            if (!(scale_x&(scale_x - 1)) && !(scale_y&(scale_y - 1))) // if power of 2
-                return false;
-        }
-    }
-#endif
-
-    bool  affine = false;
-    const double IPP_RESIZE_EPS = (depth == CV_64F)?0:1e-10;
-    double ex = fabs((double)dst_width / src_width  - inv_scale_x) / inv_scale_x;
-    double ey = fabs((double)dst_height / src_height - inv_scale_y) / inv_scale_y;
-
-    // Use affine transform resize to allow sub-pixel accuracy
-    if(ex > IPP_RESIZE_EPS || ey > IPP_RESIZE_EPS)
-        affine = true;
-
-    // Affine doesn't support Lanczos and Super interpolations
-    if(affine && (ippInter == ippLanczos || ippInter == ippSuper))
-        return false;
-
-    try
-    {
-        ::ipp::IwiImage iwSrc(::ipp::IwiSize(src_width, src_height), ippDataType, channels, 0, (void*)src_data, src_step);
-        ::ipp::IwiImage iwDst(::ipp::IwiSize(dst_width, dst_height), ippDataType, channels, 0, (void*)dst_data, dst_step);
-
-        bool  ok;
-        int   threads = ippiSuggestThreadsNum(iwDst, 1+((double)(src_width*src_height)/(dst_width*dst_height)));
-        Range range(0, dst_height);
-        ipp_resizeParallel       invokerGeneral(iwSrc, iwDst, ok);
-        ipp_resizeAffineParallel invokerAffine(iwSrc, iwDst, ok);
-        ParallelLoopBody        *pInvoker = NULL;
-        if(affine)
-        {
-            pInvoker = &invokerAffine;
-            invokerAffine.Init(ippInter, inv_scale_x, inv_scale_y);
-        }
-        else
-        {
-            pInvoker = &invokerGeneral;
-            invokerGeneral.Init(ippInter);
-        }
-
-        if(IPP_RESIZE_PARALLEL && threads > 1)
-            parallel_for_(range, *pInvoker, threads*4);
-        else
-            pInvoker->operator()(range);
-
-        if(!ok)
-            return false;
-    }
-    catch(const ::ipp::IwException &)
-    {
-        return false;
-    }
-    return true;
-#else
-    CV_UNUSED(src_data); CV_UNUSED(src_step); CV_UNUSED(src_width); CV_UNUSED(src_height); CV_UNUSED(dst_data); CV_UNUSED(dst_step);
-    CV_UNUSED(dst_width); CV_UNUSED(dst_height); CV_UNUSED(inv_scale_x); CV_UNUSED(inv_scale_y); CV_UNUSED(depth);
-    CV_UNUSED(channels); CV_UNUSED(interpolation);
-    return false;
-#endif
-}
-#endif
-
 //==================================================================================================
 
 namespace hal {
@@ -3842,8 +3660,6 @@ void resize(int src_type,
     Size dsize = Size(saturate_cast<int>(src_width*inv_scale_x),
                         saturate_cast<int>(src_height*inv_scale_y));
     CV_Assert( !dsize.empty() );
-
-    CV_IPP_RUN_FAST(ipp_resize(src_data, src_step, src_width, src_height, dst_data, dst_step, dsize.width, dsize.height, inv_scale_x, inv_scale_y, depth, cn, interpolation))
 
     static ResizeFunc linear_tab[CV_DEPTH_MAX] =
     {

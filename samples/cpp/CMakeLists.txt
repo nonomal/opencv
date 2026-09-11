@@ -11,7 +11,7 @@ set(OPENCV_CPP_SAMPLES_REQUIRED_DEPS
   opencv_objdetect
   opencv_photo
   opencv_features
-  opencv_3d
+  opencv_geometry
   opencv_stereo
   opencv_calib
   opencv_stitching
@@ -24,8 +24,8 @@ if(NOT BUILD_EXAMPLES OR NOT OCV_DEPENDENCIES_FOUND)
   return()
 endif()
 
-set(DEPS_example_snippet_imgproc_segmentation opencv_core opencv_imgproc)
-set(DEPS_example_cpp_intelligent_scissors opencv_core opencv_imgproc opencv_imgcodecs opencv_highgui)
+set(DEPS_example_snippet_imgproc_segmentation opencv_core opencv_photo)
+set(DEPS_example_cpp_intelligent_scissors opencv_core opencv_photo opencv_imgcodecs opencv_highgui)
 
 project(cpp_samples)
 ocv_include_modules_recurse(${OPENCV_CPP_SAMPLES_REQUIRED_DEPS})

@@ -72,6 +72,7 @@ def main(func_args=None):
         help()
         exit(1)
 
+    cv.utils.logging.setLogLevel(cv.utils.logging.LOG_LEVEL_INFO)
     args.model = findModel(args.model, args.sha1)
     args.labels = findFile(args.labels)
 
@@ -82,12 +83,12 @@ def main(func_args=None):
             labels = f.read().rstrip('\n').split('\n')
 
     # Load a network
-    engine = cv.dnn.ENGINE_AUTO
-    if args.backend != "default" or args.target != "cpu":
-        engine = cv.dnn.ENGINE_CLASSIC
+    engine = cv.dnn.ENGINE_OPENCV
     net = cv.dnn.readNetFromONNX(args.model, engine)
     net.setPreferableBackend(get_backend_id(args.backend))
     net.setPreferableTarget(get_target_id(args.target))
+    if hasattr(cv.dnn, 'DNN_PROFILE_SUMMARY'):
+        net.setProfilingMode(cv.dnn.DNN_PROFILE_SUMMARY)
 
     winName = 'Deep learning image classification in OpenCV'
     cv.namedWindow(winName, cv.WINDOW_NORMAL)
@@ -135,7 +136,10 @@ def main(func_args=None):
 
         # Run a model
         net.setInput(blob)
+        t0 = cv.getTickCount()
         out = net.forward()
+        t = (cv.getTickCount() - t0) / cv.getTickFrequency()
+        net.printPerfProfile()
 
         (h, w, _) = frame.shape
         roi_rows = min(300, h)
@@ -143,8 +147,7 @@ def main(func_args=None):
         frame[:roi_rows,:roi_cols,:] >>= 1
 
         # Put efficiency information.
-        t, _ = net.getPerfProfile()
-        label = 'Inference time: %.1f ms' % (t * 1000.0 / cv.getTickFrequency())
+        label = 'Inference time: %.1f ms' % (t * 1000.0)
         cv.putText(frame, label, (15, 30), cv.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0))
 
         # Print predicted classes.

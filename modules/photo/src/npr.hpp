@@ -44,7 +44,7 @@
 #include <iostream>
 #include <stdlib.h>
 #include <limits>
-#include "math.h"
+#include <math.h>
 
 
 using namespace std;
@@ -184,7 +184,7 @@ void Domain_Filter::compute_Rfilter(Mat &output, Mat &hz, float sigma_h)
 
     for(int i=0;i<h;i++)
         for(int j=0;j<w;j++)
-            V.at<float>(i,j) = pow(a,hz.at<float>(i,j));
+            V.at<float>(i,j) = std::pow(a,hz.at<float>(i,j));
 
    for(int i=0; i<h; i++)
     {
@@ -309,6 +309,9 @@ void Domain_Filter::compute_NCfilter(Mat &output, Mat &hz, Mat &psketch, float r
     int h = output.rows;
     int w = output.cols;
     int channel = output.channels();
+
+    if (w < 2)
+        return;
 
     compute_boxfilter(output,hz,psketch,radius);
 
@@ -490,7 +493,7 @@ void Domain_Filter::filter(const Mat &img, Mat &res, float sigma_s = 60, float s
 
         for(int i=0;i<no_of_iter;i++)
         {
-            sigma_h = (float) (sigma_s * sqrt(3.0) * pow(2.0,(no_of_iter - (i+1))) / sqrt(pow(4.0,no_of_iter) -1));
+            sigma_h = (float) (sigma_s * sqrt(3.0) * std::pow(2,(no_of_iter - (i+1))) / sqrt(std::pow(4,no_of_iter) -1));
 
             compute_Rfilter(O, horiz, sigma_h);
 
@@ -513,7 +516,7 @@ void Domain_Filter::filter(const Mat &img, Mat &res, float sigma_s = 60, float s
 
         for(int i=0;i<no_of_iter;i++)
         {
-            sigma_h = (float) (sigma_s * sqrt(3.0) * pow(2.0,(no_of_iter - (i+1))) / sqrt(pow(4.0,no_of_iter) -1));
+            sigma_h = (float) (sigma_s * sqrt(3.0) * std::pow(2,(no_of_iter - (i+1))) / sqrt(std::pow(4,no_of_iter) -1));
 
             radius = (float) sqrt(3.0) * sigma_h;
 
@@ -560,7 +563,7 @@ void Domain_Filter::pencil_sketch(const Mat &img, Mat &sketch, Mat &color_res, f
 
     for(int i=0;i<no_of_iter;i++)
     {
-        sigma_h = (float) (sigma_s * sqrt(3.0) * pow(2.0,(no_of_iter - (i+1))) / sqrt(pow(4.0,no_of_iter) -1));
+        sigma_h = (float) (sigma_s * sqrt(3.0) * std::pow(2,(no_of_iter - (i+1))) / sqrt(std::pow(4,no_of_iter) -1));
 
         radius = (float) sqrt(3.0) * sigma_h;
 

@@ -9,13 +9,26 @@ set(IPP_HAL_HEADERS
   CACHE INTERNAL "")
 
 add_library(ipphal STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/math_ipp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/mean_ipp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/minmax_ipp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/norm_ipp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/cart_polar_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/color_ipp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/transforms_ipp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/warp_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/deriv_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/resize_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/box_filter_ipp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/sum_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/color_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/filter_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/matchtemplate_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/canny_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/threshold_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/distancetransform_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/bilateral_filter_ipp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/samplers_ipp.cpp"
 )
 
 #TODO: HAVE_IPP_ICV and HAVE_IPP_IW added as private macro till OpenCV itself is
@@ -42,10 +55,11 @@ target_include_directories(ipphal PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
   ${CMAKE_SOURCE_DIR}/modules/core/include
   ${CMAKE_SOURCE_DIR}/modules/imgproc/include
+  ${CMAKE_SOURCE_DIR}/modules/geometry/include
   ${IPP_INCLUDE_DIRS}
 )
 
-target_link_libraries(ipphal PUBLIC ${IPP_IW_LIBRARY} ${IPP_LIBRARIES})
+target_link_libraries(ipphal PUBLIC ${IPP_IW_LIBRARIES} ${IPP_LIBRARIES})
 
 set_target_properties(ipphal PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${3P_LIBRARY_OUTPUT_PATH} DEBUG_POSTFIX "${OPENCV_DEBUG_POSTFIX}")
 

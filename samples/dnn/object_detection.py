@@ -71,6 +71,7 @@ if args.alias is None or hasattr(args, 'help'):
     help()
     exit(1)
 
+cv.utils.logging.setLogLevel(cv.utils.logging.LOG_LEVEL_INFO)
 args.model = findModel(args.model, args.sha1)
 if args.config is not None:
     args.config = findModel(args.config, args.config_sha1)
@@ -98,12 +99,12 @@ if args.labels:
         labels = f.read().rstrip('\n').split('\n')
 
 # Load a network
-engine = cv.dnn.ENGINE_AUTO
-if args.backend != "default" or args.target != "cpu":
-    engine = cv.dnn.ENGINE_CLASSIC
+engine = cv.dnn.ENGINE_OPENCV
 net = cv.dnn.readNet(args.model, args.config, "", engine)
 net.setPreferableBackend(get_backend_id(args.backend))
 net.setPreferableTarget(get_target_id(args.target))
+if hasattr(cv.dnn, 'DNN_PROFILE_SUMMARY'):
+    net.setProfilingMode(cv.dnn.DNN_PROFILE_SUMMARY)
 outNames = net.getUnconnectedOutLayersNames()
 
 confThreshold = args.thr
@@ -155,27 +156,21 @@ def postprocess(frame, outs):
                     confidences.append(float(confidence))
                     boxes.append([left, top, width, height])
 
-    elif args.postprocessing == 'darknet':
-        box_scale_w = frameWidth
-        box_scale_h = frameHeight
-
-        for out in outs:
-            for detection in out:
-                scores = detection[4:]
-                if args.background_label_id >= 0:
-                    scores = np.delete(scores, args.background_label_id)
-                classId = np.argmax(scores)
-                confidence = scores[classId]
-                if confidence > confThreshold:
-                    center_x = int(detection[0] * box_scale_w)
-                    center_y = int(detection[1] * box_scale_h)
-                    width = int(detection[2] * box_scale_w)
-                    height = int(detection[3] * box_scale_h)
-                    left = int(center_x - width / 2)
-                    top = int(center_y - height / 2)
-                    classIds.append(classId)
-                    confidences.append(float(confidence))
-                    boxes.append([left, top, width, height])
+    elif args.postprocessing == 'yolov4':
+        boxesArr = outs[0].reshape(-1, 4)
+        confsArr = outs[1].reshape(boxesArr.shape[0], -1)
+        for j in range(boxesArr.shape[0]):
+            classId = np.argmax(confsArr[j])
+            confidence = float(confsArr[j][classId])
+            if confidence > confThreshold:
+                box = boxesArr[j]
+                left = int(box[0] * frameWidth)
+                top = int(box[1] * frameHeight)
+                width = int((box[2] - box[0]) * frameWidth)
+                height = int((box[3] - box[1]) * frameHeight)
+                classIds.append(classId)
+                confidences.append(confidence)
+                boxes.append([left, top, width, height])
 
     elif args.postprocessing == 'yolov8' or args.postprocessing == 'yolov5':
         # Network produces output blob with a shape NxC where N is a number of
@@ -216,7 +211,7 @@ def postprocess(frame, outs):
 
     # NMS is used inside Region layer only on DNN_BACKEND_OPENCV for another backends we need NMS in sample
     # or NMS is required if number of outputs > 1
-    if len(outNames) > 1 or (args.postprocessing == 'darknet' or args.postprocessing == 'yolov8' or args.postprocessing == 'yolov5') and args.backend != cv.dnn.DNN_BACKEND_OPENCV:
+    if len(outNames) > 1 or args.postprocessing == 'yolov4' or (args.postprocessing == 'yolov8' or args.postprocessing == 'yolov5') and args.backend != cv.dnn.DNN_BACKEND_OPENCV:
         indices = []
         classIds = np.array(classIds)
         boxes = np.array(boxes)
@@ -340,6 +335,7 @@ def processingThreadBody():
                 futureOutputs.append(net.forwardAsync())
             else:
                 outs = net.forward(outNames)
+                net.printPerfProfile()
                 predictionsQueue.put(copy.deepcopy(outs))
 
         while futureOutputs and futureOutputs[0].wait_for(0):
@@ -408,6 +404,7 @@ else:
 
         net.setInput(blob)
         outs = net.forward(outNames)
+        net.printPerfProfile()
 
         boxes, classIds, confidences, indices = postprocess(frame, outs)
         drawPred(classIds, confidences, boxes, indices, (stdSize*max(frame.shape[:2]))/stdImgSize, (stdWeight*max(frame.shape[:2]))//stdImgSize)

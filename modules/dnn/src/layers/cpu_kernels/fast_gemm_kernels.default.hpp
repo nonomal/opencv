@@ -13,7 +13,7 @@
 #include <opencv2/core/utility.hpp> // parallel_for_
 
 #define FAST_GEMM_STORAGE (1<<20) // 2^20
-#define FAST_GEMM_MAX_STACKBUF (1 << 14)
+#define FAST_GEMM_MAX_STACKBUF (1 << 13)
 
 #define FAST_GEMM_F32_MC 64
 #define FAST_GEMM_F32_NC 240
@@ -78,6 +78,10 @@ namespace cv { namespace dnn { namespace cpu_baseline {
 
 size_t fastGemmPackBSize(int N, int K);
 
+int fastGemmMC();
+int fastGemmNC();
+int fastGemmKC();
+
 void fastGemmPackBKernel(const char *B, char *packed_B, size_t N, size_t K, size_t ldb0, size_t ldb1, size_t esz);
 
 void fastGemmKernel(size_t M, size_t N, size_t K,
@@ -94,7 +98,16 @@ void fastGemmBatchKernel(size_t batch, const size_t *A_offsets, const size_t *B_
 void fastGemmBatchKernel(size_t batch, const size_t *A_offsets, const size_t *B_offsets, const size_t *C_offsets,
                          size_t M, size_t N, size_t K, float alpha, const char *A, size_t lda0, size_t lda1,
                          const char *packed_B, float beta, char *C, size_t ldc, size_t esz);
-
+void pagedAttnAVGemmKernel(
+    const char* A, const std::vector<const char *> &V, char*Out,
+    size_t B, size_t T_a, size_t Nq, size_t N_k, size_t T_s, size_t D, size_t T_v,
+    size_t esz, bool canonical_layout, size_t packed_stride
+);
+void pagedAttnQKGemmKernel(
+    const char *Q, const std::vector<const char *> &K, char *A,
+    size_t B, size_t T_q, size_t Nq, size_t N_k, size_t T_s, size_t D, size_t T_k,
+    float sm_scale, size_t esz, bool isQ3d
+);
 FAST_GEMM_IMPLEMENT_PACK(8, _f32, float, float)
 FAST_GEMM_IMPLEMENT_PACK(12, _f32, float, float)
 
@@ -103,6 +116,22 @@ size_t fastGemmPackBSize(int N, int K) {
     size_t NC = (((GEMM_NC < N ? GEMM_NC : N) + GEMM_NR - 1) / GEMM_NR) * GEMM_NR;
 
     return static_cast<size_t>((N + NC - 1) / NC) * NC * K;
+}
+
+int fastGemmMC() {
+    return FAST_GEMM_F32_MC;
+}
+
+int fastGemmNC() {
+    return FAST_GEMM_F32_NC;
+}
+
+int fastGemmKC() {
+    return FAST_GEMM_F32_PACKED_STRIDE_K;
+}
+
+int fastGemmNR() {
+    return FAST_GEMM_F32_NR;
 }
 
 void fastGemmPackBKernel(const char *B, char *packed_B, size_t N, size_t K, size_t ldb0, size_t ldb1, size_t esz) {
@@ -461,6 +490,232 @@ void fastGemmBatchKernel(size_t batch, const size_t *A_offsets, const size_t *B_
     double nstripes = (size_t)total * cost_per_thread * (1 / 1024.0);
     parallel_for_(Range(0, total), fn, nstripes);
 }
+
+
+
+// specially for attention
+// compute QK, supports KV Cache
+// pages in K are always of shape [B, N_kv, T_s, D]
+// tot. seq len T = T_s * S
+void pagedAttnQKGemmKernel(
+    const char *Q, const std::vector<const char *> &K, char *A,
+    size_t B, size_t T_q, size_t Nq, size_t N_k, size_t T_s, size_t D, size_t T_k,
+    float sm_scale, size_t esz, bool isQ3d
+) {
+    size_t GEMM_MC = static_cast<size_t>(FAST_GEMM_F32_MC),
+        GEMM_NC = static_cast<size_t>(FAST_GEMM_F32_NC),
+        GEMM_MR = static_cast<size_t>(FAST_GEMM_F32_MR),
+        GEMM_NR = static_cast<size_t>(FAST_GEMM_F32_NR);
+
+    size_t MC = (((GEMM_MC < T_q ? GEMM_MC : T_q) + GEMM_MR - 1) / GEMM_MR) * GEMM_MR;
+    size_t NC = (((GEMM_NC < T_s ? GEMM_NC : T_s) + GEMM_NR - 1) / GEMM_NR) * GEMM_NR;
+    size_t KC = std::min( static_cast<size_t>(FAST_GEMM_F32_PACKED_STRIDE_K), D);
+
+    size_t buff_size = KC * MC * esz;
+
+    const size_t m_tiles = (T_q + MC - 1) / MC;
+    const size_t n_tiles = (T_s + NC - 1) / NC;
+    const size_t tiles_per_mat = m_tiles * n_tiles;
+    const size_t S = K.size();
+    const size_t T = S * T_s;
+    const size_t T_r = T_s - (T - T_k);
+    const int n_kq_groups = Nq / N_k;
+    size_t batch = Nq * B;
+    // batch = B x N_q
+    int total = S *  batch * tiles_per_mat;
+
+    size_t packed_stride = fastGemmPackBSize(T_s, D);
+
+    auto fn = [&](const Range &r) {
+        cv::AutoBuffer<char, FAST_GEMM_MAX_STACKBUF> packed_q_buff;
+        packed_q_buff.allocate(buff_size);
+        char*packed_q = packed_q_buff.data();
+
+        size_t start = r.start;
+        size_t end = r.end;
+        size_t ldq0 = isQ3d ? Nq * D : D;
+
+        for (size_t tile_idx = start; tile_idx < end; tile_idx++) {
+            size_t idx = tile_idx / tiles_per_mat;
+            size_t b = idx / (Nq * S);
+            size_t nq = (idx - b * Nq * S) / S;
+            size_t n_k = nq / n_kq_groups;
+            size_t s = (idx - b * Nq * S) % S;
+
+            const size_t m_tiles_index = (tile_idx - idx * tiles_per_mat) / n_tiles;
+            const size_t n_tiles_index = tile_idx % n_tiles;
+
+            size_t i0 = m_tiles_index * MC;
+            size_t j0 = n_tiles_index * NC;
+            size_t mc = T_q - i0 < MC ? T_q - i0 : MC;
+            size_t nc = T_s - j0 < NC ? T_s - j0 : NC;
+
+            size_t rc = nc;
+            if (s == S - 1) {
+                if (j0 >= T_r) continue; // Completely out of bounds, skip this tile
+                rc = std::min(nc, T_r - j0);
+            }
+
+            size_t q_offset = b * Nq * T_q * D              +
+                              (isQ3d ? nq * D : nq * T_q * D);
+            const char *q_block = Q + q_offset * esz;
+
+            size_t k_offset = b * N_k * packed_stride +
+                              n_k * packed_stride     +
+                              j0 * D;
+            const char *k_block = (const char *)K[s] + k_offset * esz;
+
+            // save result to A[b, n_q, : , T_s * s : T_s * (s + 1)]
+            const size_t a_offset = b * Nq * T_q * T_k +
+                                    nq * T_q * T_k     +
+                                    T_s * s            +
+                                    i0 * T_k + j0;
+            char* a_block = A + a_offset  * esz;
+
+            for(size_t i = 0; i < mc; i++) {
+                memset(a_block + i * T_k * esz, 0, rc * esz);
+            }
+
+            int _nc = static_cast<int>((nc + GEMM_NR - 1) / GEMM_NR) * GEMM_NR * esz;
+            for(int k0 = 0; k0 < (int)D; k0 += (int)KC)
+            {
+                int kc = D - k0 < (int)KC ? (int)D - k0 : (int)KC;
+                // pack q
+                size_t step_q = (i0 * ldq0 + k0) * esz;
+                fast_gemm_pack8_f32(mc, kc, q_block + step_q, ldq0, 1, packed_q);
+                // run kernel
+                fast_gemm_macro_kernel(mc, rc, kc, packed_q, k_block, sm_scale, a_block, T_k, esz);
+                k_block += _nc * kc;
+            }
+        }
+
+    };
+
+
+    int cost_per_thread = static_cast<int>((D / KC) * (MC / GEMM_MR) * (NC / GEMM_NR));
+    double nstripes = (size_t)total * cost_per_thread * (1 / 1024.0);
+    parallel_for_(Range(0, total), fn, nstripes);
+}
+
+
+
+// specially for attention
+// compute QK, supports KV Cache
+// A is of shape [B, N_q, T_q, T_s * S]
+// pages in K are always of shape [B, N_kv, T_s, D]
+// tot. seq len T = T_s * S
+void pagedAttnAVGemmKernel(
+    const char* A, const std::vector<const char *> &V, char*Out,
+    size_t B, size_t T_a, size_t Nq, size_t N_k, size_t T_s, size_t D, size_t T_v,
+    size_t esz, bool canonical_layout, size_t packed_stride
+) {
+
+    size_t GEMM_MC = static_cast<size_t>(FAST_GEMM_F32_MC),
+        GEMM_NC = static_cast<size_t>(FAST_GEMM_F32_NC),
+        GEMM_MR = static_cast<size_t>(FAST_GEMM_F32_MR),
+        GEMM_NR = static_cast<size_t>(FAST_GEMM_F32_NR);
+
+    size_t MC = (((GEMM_MC < T_a ? GEMM_MC : T_a) + GEMM_MR - 1) / GEMM_MR) * GEMM_MR;
+    size_t NC = (((GEMM_NC < D ? GEMM_NC : D) + GEMM_NR - 1) / GEMM_NR) * GEMM_NR;
+    size_t KC = std::min( static_cast<size_t>(FAST_GEMM_F32_PACKED_STRIDE_K), T_v);
+
+    size_t buff_size = KC * MC * esz;
+
+    const size_t m_tiles = (T_a + MC - 1) / MC;
+    const size_t n_tiles = (D + NC - 1) / NC;
+    const size_t tiles_per_mat = m_tiles * n_tiles;
+    const int n_kq_groups = Nq / N_k;
+    size_t batch = Nq * B;
+    int total = batch * tiles_per_mat;
+
+    auto fn = [&](const Range &r) {
+        cv::AutoBuffer<char, FAST_GEMM_MAX_STACKBUF> packed_a_buff;
+        packed_a_buff.allocate(buff_size);
+        char* packed_a = packed_a_buff.data();
+
+        cv::AutoBuffer<char, FAST_GEMM_MAX_STACKBUF> repacked_v_buff;
+        repacked_v_buff.allocate(NC * T_s * esz);
+        char* repacked_v = repacked_v_buff.data();
+
+        size_t start = r.start;
+        size_t end = r.end;
+        size_t ldc0 = canonical_layout ? Nq * D : D;
+
+        for (size_t tile_idx = start; tile_idx < end; tile_idx++) {
+            size_t idx = tile_idx / tiles_per_mat;
+            size_t b = idx / Nq;
+            size_t nq = idx % Nq;
+            size_t n_k = nq / n_kq_groups;
+
+            size_t m_tiles_index = (tile_idx - idx * tiles_per_mat) / n_tiles;
+            size_t n_tiles_index = tile_idx % n_tiles;
+
+            size_t i0 = m_tiles_index * MC;
+            size_t j0 = n_tiles_index * NC;
+
+            size_t mc = T_a - i0 < MC ? T_a - i0 : MC;
+            size_t nc = D - j0 < NC ? D - j0 : NC;
+
+            const size_t a_offset = b * Nq * T_a * T_v +
+                                    nq * T_a * T_v     +
+                                    i0 * T_v;
+            const char*a_block    = A + a_offset * esz;
+
+            // start at the 0th row
+            // column offset is determined according to packed layout
+            size_t v_offset_base = b * N_k * packed_stride  +
+                                   n_k * packed_stride      +
+                                   n_tiles_index * T_s * NC;
+
+            size_t o_offset = b * Nq * T_a * D;
+            if (canonical_layout)
+                o_offset += i0 * Nq * D + nq * D + j0;
+            else
+                o_offset += nq * T_a * D + i0 * D + j0;
+            char* out_block = Out + o_offset * esz;
+
+            for(size_t i = 0; i < mc; i++) {
+                memset(out_block + i * ldc0 * esz, 0, nc * esz);
+            }
+
+            // int _nc = static_cast<int>((nc + GEMM_NR - 1) / GEMM_NR) * GEMM_NR * esz;
+
+            for(int k0 = 0; k0 < (int)T_v; )
+            {
+                size_t sk = k0 / T_s; // which page
+                size_t k = k0 % T_s;
+                int kc = std::min((int)KC, (int)T_v - k0);
+                kc = std::min(kc, (int)T_s - (int)k);
+
+                size_t v_offset = v_offset_base * esz + k * GEMM_NR * esz;
+                const char *v_block = V[sk] + v_offset;
+
+                // pack a
+                fast_gemm_pack8_f32(mc, kc, a_block + k0 * esz, T_v, 1, packed_a);
+
+                const char* v_block_to_use = v_block;
+                if (kc < (int)T_s) {
+                    for (size_t j = 0; j < nc; j += GEMM_NR) {
+                        const char *src_panel = v_block + j * T_s * esz;
+                        char *dst_panel = repacked_v + j * kc * esz;
+                        memcpy(dst_panel, src_panel, kc * GEMM_NR * esz);
+                    }
+                    v_block_to_use = repacked_v;
+                }
+
+                // run kernel
+                fast_gemm_macro_kernel(mc, nc, kc, packed_a, v_block_to_use, 1.f, out_block, ldc0, esz);
+                k0 += kc;
+            }
+        }
+
+    };
+
+    int cost_per_thread = static_cast<int>((T_v / KC) * (MC / GEMM_MR) * (NC / GEMM_NR));
+    double nstripes = (size_t)total * cost_per_thread * (1 / 1024.0);
+    parallel_for_(Range(0, total), fn, nstripes);
+}
+
 
 }}} // cv::dnn::cpu_baseline
 

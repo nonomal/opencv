@@ -33,8 +33,7 @@ model, but the methodology applies to other supported models.
 - [YOLOv5](https://github.com/ultralytics/yolov5),
 - [YOLOv4](https://github.com/Tianxiaomo/pytorch-YOLOv4).
 
-This support includes pre and post-processing routines specific to these models. While other older
-version of YOLO are also supported by OpenCV in Darknet format, they are out of the scope of this tutorial.
+This support includes pre and post-processing routines specific to these models. Older versions of YOLO (v1–v3) are no longer supported, as Darknet format support was removed from OpenCV's DNN module.
 
 
 Assuming that we have successfully trained YOLOX model, the subsequent step involves exporting and
@@ -55,7 +54,7 @@ sizes contingent upon the model's scale.
 
 This table provides a quick reference to understand the different input dimensions commonly used in
 various YOLO models inputs. These are standard input shapes. Make sure you use input size that you
-trained model with, if it is differed from from the size mentioned in the table.
+trained model with, if it is differed from the size mentioned in the table.
 
 The next critical element in the process involves understanding the specifics of image pre-processing
 for YOLO detectors. While the fundamental pre-processing approach remains consistent across the YOLO
@@ -79,7 +78,7 @@ the ONNX graph, a process that we will detail further in the subsequent sections
 
 ### PyTorch Model Export
 
-Now that we know know the parameters of the pre-precessing we can go on and export the model from
+Now that we know the parameters of the pre-processing we can go on and export the model from
 Pytorch to ONNX graph. Since in this tutorial we are using YOLOX as our sample model, lets use its
 export for demonstration purposes (the process is  identical for the rest of the YOLO detectors except `YOLOv10` model, see details on how to export it later in the post).
 To exporting YOLOX we can just use [export script](https://github.com/Megvii-BaseDetection/YOLOX/blob/ac58e0a5e68e57454b7b9ac822aced493b553c53/tools/export_onnx.py). Particularly we need following commands:
@@ -129,7 +128,7 @@ than YOLOX) in case it is needed. However, usually each YOLO repository has pred
 
 #### Exporting YOLOv10 model
 
-In oder to run YOLOv10 one needs to cut off postporcessing with dynamic shapes from torch and then convert it to ONNX. If someone is looking for on how to cut off the postprocessing, there is this [forked branch](https://github.com/Abdurrahheem/yolov10/tree/ash/opencv-export) from official YOLOv10. The forked branch cuts of the postprocessing by [returning output](https://github.com/Abdurrahheem/yolov10/blob/4fdaafd912c8891642bfbe85751ea66ec20f05ad/ultralytics/nn/modules/head.py#L522) of the model before postprocessing procedure itself. To convert torch model to ONNX follow this proceduce.
+In order to run YOLOv10 one needs to cut off postprocessing with dynamic shapes from torch and then convert it to ONNX. If someone is looking for on how to cut off the postprocessing, there is this [forked branch](https://github.com/Abdurrahheem/yolov10/tree/ash/opencv-export) from official YOLOv10. The forked branch cuts off the postprocessing by [returning output](https://github.com/Abdurrahheem/yolov10/blob/4fdaafd912c8891642bfbe85751ea66ec20f05ad/ultralytics/nn/modules/head.py#L522) of the model before postprocessing procedure itself. To convert torch model to ONNX follow this procedure.
 
 @code{.bash}
 git clone git@github.com:Abdurrahheem/yolov10.git
@@ -170,7 +169,7 @@ Once we have our ONNX graph of the model, we just simply can run with OpenCV's s
 - --nms: Non-maximum suppression threshold (e.g., 0.4).
 - --mean: Mean normalization value (e.g., 0.0 for no mean normalization).
 - --scale: Scale factor for input normalization (e.g., 1.0, 1/255.0, etc).
-- --yolo: YOLO model version (e.g., YOLOv3, YOLOv4, etc.).
+- --yolo: YOLO model version (e.g., YOLOv8, YOLOX, YOLOv10, etc.).
 - --padvalue: Padding value used in pre-processing (e.g., 114.0).
 - --paddingmode: Method for handling image resizing and padding. Options: 0 (resize without extra processing), 1 (crop after resize), 2 (resize with aspect ratio preservation).
 - --backend: Selection of computation backend (0 for automatic, 1 for Halide, 2 for OpenVINO, etc.).

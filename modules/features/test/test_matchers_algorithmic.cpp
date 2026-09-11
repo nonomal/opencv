@@ -558,7 +558,7 @@ TEST( Features2d_DMatch, read_write )
 #ifdef HAVE_OPENCV_FLANN
 TEST( Features2d_FlannBasedMatcher, read_write )
 {
-    static const char* ymlfile = "%YAML:1.0\n---\n"
+    static const char* ymlfile = "%YAML 1.2\n---\n"
     "format: 3\n"
     "indexParams:\n"
     "   -\n"
@@ -627,6 +627,124 @@ TEST(Features2d_DMatch, issue_17771)
     Ptr<BFMatcher> ubf = BFMatcher::create(NORM_HAMMING);
     Mat mask = (Mat_<uchar>(2, 2) << 1, 0, 0, 1);
     EXPECT_NO_THROW(ubf->knnMatch(usources, utargets, match, 1, mask, true));
+}
+
+// Verify that cross-check BFMatcher gives identical results via Mat (CPU) and UMat (OCL or CPU).
+// When OpenCL is active the UMat path exercises ocl_matchWithCrossCheck; when it is not,
+// both paths fall through to the same CPU code — either way the results must match.
+TEST(Features2d_BFMatcher_CrossCheck, ocl_matches_cpu)
+{
+    RNG rng(42);
+    const int nQuery = 200;
+    const int nTrain = 400;
+    const int dim    = 128;
+
+    // Float descriptors: the OCL dispatch in knnMatchImpl requires CV_32FC1
+    Mat queryMat(nQuery, dim, CV_32FC1);
+    Mat trainMat(nTrain, dim, CV_32FC1);
+    rng.fill(queryMat, RNG::UNIFORM, 0.f, 1.f);
+    rng.fill(trainMat, RNG::UNIFORM, 0.f, 1.f);
+
+    // CPU reference: Mat inputs always take the CPU path
+    Ptr<BFMatcher> cpuMatcher = BFMatcher::create(NORM_L2, true /*crossCheck*/);
+    vector<DMatch> cpuMatches;
+    cpuMatcher->match(queryMat, trainMat, cpuMatches);
+
+    // UMat path: activates OCL dispatch when OpenCL is available
+    UMat queryUMat = queryMat.getUMat(ACCESS_READ);
+    UMat trainUMat = trainMat.getUMat(ACCESS_READ);
+    Ptr<BFMatcher> oclMatcher = BFMatcher::create(NORM_L2, true /*crossCheck*/);
+    vector<DMatch> oclMatches;
+    oclMatcher->match(queryUMat, trainUMat, oclMatches);
+
+    // Both paths must return the same set of matches (order may differ)
+    ASSERT_EQ(cpuMatches.size(), oclMatches.size());
+
+    auto byQuery = [](const DMatch& a, const DMatch& b) { return a.queryIdx < b.queryIdx; };
+    sort(cpuMatches.begin(), cpuMatches.end(), byQuery);
+    sort(oclMatches.begin(), oclMatches.end(), byQuery);
+
+    for (size_t i = 0; i < cpuMatches.size(); ++i)
+    {
+        EXPECT_EQ(cpuMatches[i].queryIdx, oclMatches[i].queryIdx) << "at index " << i;
+        EXPECT_EQ(cpuMatches[i].trainIdx, oclMatches[i].trainIdx) << "at index " << i;
+        EXPECT_NEAR(cpuMatches[i].distance, oclMatches[i].distance, 1e-3f) << "at index " << i;
+    }
+}
+
+// Regression test for https://github.com/opencv/opencv/issues/22093
+// A BFMatcher built with crossCheck enabled must report isMaskSupported()
+// as false and must not assert/crash when a non-empty mask is supplied.
+// Before the fix the mask reached batchDistance's CV_Assert(mask.empty())
+// and aborted the process.
+TEST(Features2d_BFMatcher_CrossCheck, issue_22093_mask)
+{
+    const string imgPath = cvtest::findDataFile(
+        "cv/detectors_descriptors_evaluation/images_datasets/leuven/img1.png");
+    Mat img = imread(imgPath, IMREAD_GRAYSCALE);
+    ASSERT_FALSE(img.empty());
+
+    Ptr<ORB> orb = ORB::create();
+    vector<KeyPoint> keypoints;
+    Mat descriptors;
+    orb->detectAndCompute(img, noArray(), keypoints, descriptors);
+    ASSERT_FALSE(descriptors.empty());
+
+    Ptr<BFMatcher> matcher = BFMatcher::create(NORM_HAMMING, true /*crossCheck*/);
+    ASSERT_FALSE(matcher->isMaskSupported());
+
+    // Register the descriptors as the train set, then match query against
+    // train with a non-empty per-image mask. This is the exact call chain
+    // from the issue (match -> knnMatch -> knnMatchImpl -> batchDistance).
+    // Before the fix the mask reached batchDistance's CV_Assert(mask.empty())
+    // and aborted the process.
+    matcher->add(descriptors);
+    Mat mask = Mat::ones(descriptors.rows, descriptors.rows, CV_8UC1);
+    vector<Mat> masks(1, mask);
+
+    vector<DMatch> matches;
+    EXPECT_NO_THROW(matcher->match(descriptors, matches, masks));
+    ASSERT_FALSE(matches.empty());
+}
+
+// OCL coverage for https://github.com/opencv/opencv/issues/22093
+// SIFT is used only to obtain float (CV_32FC1) descriptors, which are then
+// wrapped as UMat so the OCL BFMatcher dispatch is eligible. With an empty
+// mask the OCL cross-check kernel (ocl_matchWithCrossCheck) runs; with a
+// non-empty mask the OCL dispatch refuses it and falls back to the CPU path,
+// which (thanks to the fix) must not assert or crash.
+TEST(Features2d_BFMatcher_CrossCheck, issue_22093_mask_ocl)
+{
+    const string imgPath = cvtest::findDataFile(
+        "cv/detectors_descriptors_evaluation/images_datasets/leuven/img1.png");
+    Mat img = imread(imgPath, IMREAD_GRAYSCALE);
+    ASSERT_FALSE(img.empty());
+
+    Ptr<SIFT> sift = cv::SIFT::create();
+    vector<KeyPoint> keypoints;
+    Mat descriptors;
+    sift->detectAndCompute(img, noArray(), keypoints, descriptors);
+    ASSERT_EQ(descriptors.type(), CV_32FC1);
+    ASSERT_FALSE(descriptors.empty());
+
+    Ptr<BFMatcher> matcher = BFMatcher::create(NORM_L2, true /*crossCheck*/);
+    ASSERT_FALSE(matcher->isMaskSupported());
+
+    matcher->add(descriptors);
+    UMat query = descriptors.getUMat(ACCESS_READ);
+
+    // (1) explicit empty mask -> OCL cross-check kernel is eligible
+    vector<Mat> emptyMasks(1, Mat());
+    vector<DMatch> matchesEmpty;
+    EXPECT_NO_THROW(matcher->match(query, matchesEmpty, emptyMasks));
+    ASSERT_FALSE(matchesEmpty.empty());
+
+    // (2) non-empty mask -> OCL refused, CPU fallback must not crash
+    Mat mask = Mat::ones(descriptors.rows, descriptors.rows, CV_8UC1);
+    vector<Mat> masks(1, mask);
+    vector<DMatch> matchesMasked;
+    EXPECT_NO_THROW(matcher->match(query, matchesMasked, masks));
+    ASSERT_FALSE(matchesMasked.empty());
 }
 
 }} // namespace
