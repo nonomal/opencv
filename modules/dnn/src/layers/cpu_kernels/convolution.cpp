@@ -1511,9 +1511,15 @@ void runFastConv(InputArray _input, OutputArray _output, const Ptr<FastConv>& co
 
                             char *wptr = weights + (k0_block * DkHkWkCg + c0 * CONV_MR) * esz;
                             float *cptr = cbuf_task + stripe * CONV_NR;
+#ifdef CONV_ARM_FP16
                             hfloat* cptr_f16 = (hfloat*)cbuf_task + stripe*CONV_NR;
+#endif // CONV_ARM_FP16
                             for (int k = k0_block; k < k1_block; k += CONV_MR,
-                                    wptr += DkHkWkCg * CONV_MR * esz, cptr += CONV_MR * ldc, cptr_f16 += CONV_MR * ldc)
+                                    wptr += DkHkWkCg * CONV_MR * esz,
+#ifdef CONV_ARM_FP16
+                                    cptr_f16 += CONV_MR * ldc,
+#endif // CONV_ARM_FP16
+                                    cptr += CONV_MR * ldc)
                             {
 #if CV_TRY_AVX2
                                 if (conv->useAVX2)
@@ -1547,12 +1553,18 @@ void runFastConv(InputArray _input, OutputArray _output, const Ptr<FastConv>& co
 
                     size_t outofs = ((n * ngroups + g) * Kg + k0_block) * out_planesize + zyx0;
                     const float *cptr = cbuf_task;
+#ifdef CONV_ARM_FP16
                     const hfloat *cptr_fp16 = (const hfloat *)cbuf_task;
+#endif // CONV_ARM_FP16
                     float *outptr = out + outofs;
                     const float *pbptr = fusedAddPtr0 ? fusedAddPtr0 + outofs : 0;
 
                     for (int k = k0_block; k < k1_block; k++,
-                            cptr += ldc, cptr_fp16 += ldc, outptr += out_planesize,
+                            cptr += ldc,
+#ifdef CONV_ARM_FP16
+                            cptr_fp16 += ldc,
+#endif // CONV_ARM_FP16
+                            outptr += out_planesize,
                             pbptr += (pbptr ? out_planesize : 0))
                     {
                         float biasval = biasptr[k];
@@ -2194,6 +2206,70 @@ void convBlock_F32(int np, const float* a, const float* b, float* c, int ldc, bo
         return;
     }
     convBlockNoSIMD(np, a, b, c, ldc, init_c, outLen, convMR, convNR);
+#elif CV_RVV
+{
+    // LMUL=1 kernel: vlanes = VLEN/32 (8 at VLEN=256).
+    // OpenCV's v_float32 is vfloat32m2_t (LMUL=2, vlanes=2*VLEN/32=16 at VLEN=256);
+    // 24 % 16 != 0, so the 24-wide tile requires LMUL=1 and native intrinsics.
+    // vfmacc.vf (scalar-into-vector FMA) avoids a broadcast register.
+    // Only the exact full-tile case (outLen==convNR) is handled; tails fall to scalar.
+    const size_t vl = __riscv_vsetvlmax_e32m1();
+    if (convMR == 4 && (size_t)convNR == 3 * vl && outLen == convNR)
+    {
+        vfloat32m1_t c00 = __riscv_vfmv_v_f_f32m1(0.f, vl);
+        vfloat32m1_t c01 = c00, c02 = c00;
+        vfloat32m1_t c10 = c00, c11 = c00, c12 = c00;
+        vfloat32m1_t c20 = c00, c21 = c00, c22 = c00;
+        vfloat32m1_t c30 = c00, c31 = c00, c32 = c00;
+        for (int p = 0; p < np; p++, a += convMR, b += convNR)
+        {
+            vfloat32m1_t b0 = __riscv_vle32_v_f32m1(b,          vl);
+            vfloat32m1_t b1 = __riscv_vle32_v_f32m1(b + vl,     vl);
+            vfloat32m1_t b2 = __riscv_vle32_v_f32m1(b + 2 * vl, vl);
+            c00 = __riscv_vfmacc_vf_f32m1(c00, a[0], b0, vl);
+            c01 = __riscv_vfmacc_vf_f32m1(c01, a[0], b1, vl);
+            c02 = __riscv_vfmacc_vf_f32m1(c02, a[0], b2, vl);
+            c10 = __riscv_vfmacc_vf_f32m1(c10, a[1], b0, vl);
+            c11 = __riscv_vfmacc_vf_f32m1(c11, a[1], b1, vl);
+            c12 = __riscv_vfmacc_vf_f32m1(c12, a[1], b2, vl);
+            c20 = __riscv_vfmacc_vf_f32m1(c20, a[2], b0, vl);
+            c21 = __riscv_vfmacc_vf_f32m1(c21, a[2], b1, vl);
+            c22 = __riscv_vfmacc_vf_f32m1(c22, a[2], b2, vl);
+            c30 = __riscv_vfmacc_vf_f32m1(c30, a[3], b0, vl);
+            c31 = __riscv_vfmacc_vf_f32m1(c31, a[3], b1, vl);
+            c32 = __riscv_vfmacc_vf_f32m1(c32, a[3], b2, vl);
+        }
+        if (!init_c)
+        {
+            c00 = __riscv_vfadd_vv_f32m1(c00, __riscv_vle32_v_f32m1(c,                   vl), vl);
+            c01 = __riscv_vfadd_vv_f32m1(c01, __riscv_vle32_v_f32m1(c + vl,              vl), vl);
+            c02 = __riscv_vfadd_vv_f32m1(c02, __riscv_vle32_v_f32m1(c + 2 * vl,          vl), vl);
+            c10 = __riscv_vfadd_vv_f32m1(c10, __riscv_vle32_v_f32m1(c + ldc,             vl), vl);
+            c11 = __riscv_vfadd_vv_f32m1(c11, __riscv_vle32_v_f32m1(c + ldc + vl,        vl), vl);
+            c12 = __riscv_vfadd_vv_f32m1(c12, __riscv_vle32_v_f32m1(c + ldc + 2 * vl,    vl), vl);
+            c20 = __riscv_vfadd_vv_f32m1(c20, __riscv_vle32_v_f32m1(c + 2 * ldc,         vl), vl);
+            c21 = __riscv_vfadd_vv_f32m1(c21, __riscv_vle32_v_f32m1(c + 2 * ldc + vl,    vl), vl);
+            c22 = __riscv_vfadd_vv_f32m1(c22, __riscv_vle32_v_f32m1(c + 2 * ldc + 2 * vl, vl), vl);
+            c30 = __riscv_vfadd_vv_f32m1(c30, __riscv_vle32_v_f32m1(c + 3 * ldc,         vl), vl);
+            c31 = __riscv_vfadd_vv_f32m1(c31, __riscv_vle32_v_f32m1(c + 3 * ldc + vl,    vl), vl);
+            c32 = __riscv_vfadd_vv_f32m1(c32, __riscv_vle32_v_f32m1(c + 3 * ldc + 2 * vl, vl), vl);
+        }
+        __riscv_vse32_v_f32m1(c,                    c00, vl);
+        __riscv_vse32_v_f32m1(c + vl,               c01, vl);
+        __riscv_vse32_v_f32m1(c + 2 * vl,           c02, vl);
+        __riscv_vse32_v_f32m1(c + ldc,              c10, vl);
+        __riscv_vse32_v_f32m1(c + ldc + vl,         c11, vl);
+        __riscv_vse32_v_f32m1(c + ldc + 2 * vl,     c12, vl);
+        __riscv_vse32_v_f32m1(c + 2 * ldc,          c20, vl);
+        __riscv_vse32_v_f32m1(c + 2 * ldc + vl,     c21, vl);
+        __riscv_vse32_v_f32m1(c + 2 * ldc + 2 * vl, c22, vl);
+        __riscv_vse32_v_f32m1(c + 3 * ldc,          c30, vl);
+        __riscv_vse32_v_f32m1(c + 3 * ldc + vl,     c31, vl);
+        __riscv_vse32_v_f32m1(c + 3 * ldc + 2 * vl, c32, vl);
+        return;
+    }
+    convBlockNoSIMD(np, a, b, c, ldc, init_c, outLen, convMR, convNR);
+}
 #else
     convBlockNoSIMD(np, a, b, c, ldc, init_c, outLen, convMR, convNR);
     return;

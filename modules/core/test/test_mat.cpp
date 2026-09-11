@@ -170,7 +170,7 @@ int Core_ReduceTest::checkOp( const Mat& src, int dstType, int opType, const Mat
         getMatTypeStr( dstType, dstTypeStr );
         const char* dimStr = dim == 0 ? "ROWS" : "COLS";
 
-        snprintf( msg, sizeof(msg), "bad accuracy with srcType = %s, dstType = %s, opType = %s, dim = %s",
+        snprintf( msg, sizeof(msg), "bad accuracy with srcType = %s, dstType = %s, opType = %s, dim = %s\n",
                 srcTypeStr.c_str(), dstTypeStr.c_str(), opTypeStr, dimStr );
         ts->printf( cvtest::TS::LOG, msg );
         return cvtest::TS::FAIL_BAD_ACCURACY;
@@ -1394,6 +1394,25 @@ TEST(Core_Mat, copyToConvertTo_Empty)
     ASSERT_EQ(C.type(), CV_32SC2);
 }
 
+// Regression test for https://github.com/opencv/opencv/issues/28343
+// copyTo on empty fixed-type matrices should be a no-op and succeed
+template <typename T> class Core_Mat_copyTo : public testing::Test {};
+TYPED_TEST_CASE_P(Core_Mat_copyTo);
+
+TYPED_TEST_P(Core_Mat_copyTo, EmptyFixedType)
+{
+    cv::Mat_<TypeParam> a;
+    cv::Mat_<TypeParam> b;
+    EXPECT_NO_THROW(a.copyTo(b));
+    EXPECT_TRUE(b.empty());
+    // Verify type is still consistent after copyTo
+    EXPECT_EQ(b.type(), cv::traits::Type<TypeParam>::value);
+}
+
+REGISTER_TYPED_TEST_CASE_P(Core_Mat_copyTo, EmptyFixedType);
+typedef ::testing::Types<uchar, schar, ushort, short, int, float, double> AllMatDepths;
+INSTANTIATE_TYPED_TEST_CASE_P(CopyToTest, Core_Mat_copyTo, AllMatDepths);
+
 TEST(Core_Mat, copyNx1ToVector)
 {
     cv::Mat_<uchar> src(5, 1);
@@ -1446,6 +1465,8 @@ TEST(Core_Matx, from_initializer_list)
     Mat_<double> a = (Mat_<double>(2,2) << 10, 11, 12, 13);
     Matx22d b = {10, 11, 12, 13};
     ASSERT_EQ( cvtest::norm(a, b, NORM_INF), 0.);
+    Mat_<double> c({2, 2}, {10, 11, 12, 13});
+    ASSERT_EQ( cvtest::norm(c, b, NORM_INF), 0.);
 }
 
 TEST(Core_Mat, regression_9507)
@@ -1899,6 +1920,11 @@ TEST(Mat, from_initializer_list)
     auto D = Mat_<double>({2, 3}, {1, 2, 3, 4, 5, 6});
     EXPECT_EQ(2, D.rows);
     EXPECT_EQ(3, D.cols);
+
+    double angle = 30, a = cos(angle*CV_PI/180), b = sin(angle*CV_PI/180);
+    Mat R({2, 2}, {a, -b, b, a});
+    ASSERT_EQ(CV_64FC1, R.type());
+    ASSERT_EQ(cv::Size(2, 2), R.size());
 }
 
 TEST(Mat_, from_initializer_list)
@@ -1910,6 +1936,11 @@ TEST(Mat_, from_initializer_list)
     ASSERT_DOUBLE_EQ(cvtest::norm(A, B, NORM_INF), 0.);
     ASSERT_DOUBLE_EQ(cvtest::norm(A, C, NORM_INF), 0.);
     ASSERT_DOUBLE_EQ(cvtest::norm(B, C, NORM_INF), 0.);
+
+    double angle = 30, a = cos(angle*CV_PI/180), b = sin(angle*CV_PI/180);
+    Mat_<double> R({2, 2}, {a, -b, b, a});
+    ASSERT_EQ(CV_64FC1, R.type());
+    ASSERT_EQ(cv::Size(2, 2), R.size());
 }
 
 
@@ -2593,6 +2624,24 @@ TEST(Mat1D, DISABLED_basic)
         EXPECT_EQ(50, pt.x);
         EXPECT_EQ(0, pt.y);
     }
+}
+
+TEST(Mat, regression_cvReshapeMatND_continuous)
+{
+    int sizes[] = {2, 3, 4};
+    Mat mat(3, sizes, CV_32SC1);
+    CvMatND src = cvMatND(mat);
+    CvMatND reshaped;
+    int new_sizes[] = {4, 3, 2};
+    CvArr* result = 0;
+
+    ASSERT_NO_THROW(result = cvReshapeMatND(&src, sizeof(reshaped), &reshaped, 0, 3, new_sizes));
+    ASSERT_NE((CvArr*)0, result);
+    EXPECT_EQ(3, reshaped.dims);
+    EXPECT_EQ(new_sizes[0], reshaped.dim[0].size);
+    EXPECT_EQ(new_sizes[1], reshaped.dim[1].size);
+    EXPECT_EQ(new_sizes[2], reshaped.dim[2].size);
+    EXPECT_EQ(src.data.ptr, reshaped.data.ptr);
 }
 
 TEST(Mat, ptrVecni_20044)

@@ -209,7 +209,7 @@ OCV_OPTION(BUILD_TBB                "Download and build TBB from source" (ANDROI
 OCV_OPTION(BUILD_IPP_IW             "Build IPP IW from source"           (NOT MINGW OR OPENCV_FORCE_3RDPARTY_BUILD) IF (X86_64 OR X86) AND NOT WINRT )
 OCV_OPTION(BUILD_ITT                "Build Intel ITT from source"
     (NOT MINGW OR OPENCV_FORCE_3RDPARTY_BUILD)
-    IF (X86_64 OR X86 OR ARM OR AARCH64 OR PPC64 OR PPC64LE) AND NOT WINRT AND NOT APPLE_FRAMEWORK
+    IF (X86_64 OR X86 OR ARM OR AARCH64 OR PPC64 OR PPC64LE OR LOONGARCH64) AND NOT WINRT AND NOT APPLE_FRAMEWORK
 )
 
 # Optional 3rd party components
@@ -284,6 +284,9 @@ OCV_OPTION(WITH_WAYLAND "Include Wayland support" OFF
 OCV_OPTION(WITH_IPP "Include Intel IPP support" (NOT MINGW AND NOT CV_DISABLE_OPTIMIZATION)
   VISIBLE_IF (X86_64 OR X86) AND NOT WINRT AND NOT IOS AND NOT XROS
   VERIFY HAVE_IPP)
+OCV_OPTION(WITH_ARMPL "Include ARM Performance Libraries support (auto-download)" OFF
+   VISIBLE_IF (AARCH64 OR ARM64) AND NOT WINRT AND NOT IOS AND NOT XROS
+   VERIFY HAVE_ARMPL)
 OCV_OPTION(WITH_HALIDE "Include Halide support" OFF
   VISIBLE_IF TRUE
   VERIFY HAVE_HALIDE)
@@ -975,6 +978,13 @@ if(HAVE_FASTCV)
   endif()
 endif()
 
+if(HAVE_ARMPL)
+  ocv_debug_message(STATUS "Enable ARMPL acceleration")
+  if(NOT ";${OpenCV_HAL};" MATCHES ";armpl;")
+    set(OpenCV_HAL "armpl_hal;${OpenCV_HAL}")
+  endif()
+endif()
+
 if(HAVE_KLEIDICV)
   ocv_debug_message(STATUS "Enable KleidiCV acceleration")
   if(NOT ";${OpenCV_HAL};" MATCHES ";kleidicv;")
@@ -1019,6 +1029,14 @@ foreach(hal ${OpenCV_HAL})
       list(APPEND OpenCV_USED_HAL "fastcv (ver ${FASTCV_HAL_VERSION})")
     else()
       message(STATUS "FastCV: fastcv is not available, disabling fastcv...")
+    endif()
+  elseif(hal STREQUAL "armpl_hal")
+    if((ARM OR AARCH64 OR ARM64) AND NOT WINRT AND NOT IOS AND NOT XROS)
+      add_subdirectory(hal/armpl)
+      ocv_hal_register(ARMPL_HAL_LIBRARIES ARMPL_HAL_HEADERS ARMPL_HAL_INCLUDE_DIRS)
+      list(APPEND OpenCV_USED_HAL "ARMPL (ver ${ARMPL_HAL_VERSION})")
+    else()
+      message(STATUS "ARMPL: ARM Performance Libraries not available on this platform, disabling armpl...")
     endif()
   elseif(hal STREQUAL "kleidicv")
     add_subdirectory(hal/kleidicv)
@@ -1537,8 +1555,14 @@ if(WITH_SPNG)
   elseif(HAVE_SPNG)
     status("    PNG:" "${SPNG_LIBRARY} (ver ${SPNG_VERSION})")
   endif()
+
+  status("      Metadata Support:" "EXIF XMP ICC") # SPNG does not support cICP chunk.
 elseif(WITH_PNG OR HAVE_PNG)
-  status("    PNG:"  PNG_FOUND  THEN "${PNG_LIBRARY} (ver ${PNG_VERSION_STRING})" ELSE "build (ver ${PNG_VERSION_STRING})")
+  if(BUILD_PNG)
+    status("    PNG:" FALSE THEN "" ELSE "build (ver ${PNG_VERSION_STRING})")
+  else()
+    status("    PNG:"  PNG_FOUND  THEN "${PNG_LIBRARY} (ver ${PNG_VERSION_STRING})" ELSE "build (ver ${PNG_VERSION_STRING})")
+  endif()
   if(BUILD_PNG AND PNG_HARDWARE_OPTIMIZATIONS)
     status("      SIMD Support Request:" "YES")
     if(PNG_INTEL_SSE)
@@ -1564,6 +1588,14 @@ elseif(WITH_PNG OR HAVE_PNG)
   endif()
   elseif(BUILD_PNG)
     status("      SIMD Support Request:" "NO")
+  endif()
+
+  if(NOT (PNG_VERSION_STRING VERSION_LESS "1.6.45"))
+    status("      Metadata Support:" "EXIF XMP ICC cICP")
+  elseif(NOT (PNG_VERSION_STRING VERSION_LESS "1.6.31"))
+    status("      Metadata Support:" "EXIF XMP ICC")
+  else()
+    status("      Metadata Support:" "XMP ICC")
   endif()
 endif()
 
@@ -1783,6 +1815,12 @@ if(WITH_IPP AND HAVE_IPP)
   endif()
 endif()
 
+if(WITH_ARMPL AND HAVE_ARMPL)
+  status("    ARM Perf Lib:" "${ARMPL_VERSION_STR}")
+  status("           at:" "${ARMPL_ROOT_DIR}")
+  status("      variant:" "${ARMPL_LIB_NAME}")
+endif()
+
 if(WITH_VA OR HAVE_VA)
   status("    VA:"            HAVE_VA          THEN "YES" ELSE NO)
 endif()
@@ -1861,11 +1899,18 @@ if(WITH_EIGEN OR HAVE_EIGEN)
   status("    Eigen:"      HAVE_EIGEN       THEN "YES (ver ${EIGEN_WORLD_VERSION}.${EIGEN_MAJOR_VERSION}.${EIGEN_MINOR_VERSION})" ELSE NO)
 endif()
 
+if(WITH_CLP OR HAVE_CLP)
+  status("    CLP:"        HAVE_CLP         THEN "YES" ELSE NO)
+endif()
+
 if(WITH_OPENVX OR HAVE_OPENVX)
   status("    OpenVX:"     HAVE_OPENVX      THEN "YES (${OPENVX_LIBRARIES})" ELSE "NO")
 endif()
 if(WITH_FASTCV OR HAVE_FASTCV)
   status("    FastCV:"     HAVE_FASTCV      THEN "YES (${FASTCV_LIBRARY})" ELSE "NO")
+endif()
+if(WITH_ARMPL OR HAVE_ARMPL)
+  status("    ARM Perf Lib:"     HAVE_ARMPL      THEN "YES (${ARMPL_LIBRARY})" ELSE "NO")
 endif()
 
 status("    Custom HAL:" OpenCV_USED_HAL  THEN "YES (${OpenCV_USED_HAL})" ELSE "NO")

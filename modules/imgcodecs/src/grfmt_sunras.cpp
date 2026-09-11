@@ -61,14 +61,27 @@ bool  SunRasterDecoder::readHeader()
         int palSize = (m_bpp > 0 && m_bpp <= 8) ? (3*(1 << m_bpp)) : 0;
 
         m_strm.skip( 4 );
-        m_encoding = (SunRasType)m_strm.getDWord();
-        m_maptype = (SunRasMapType)m_strm.getDWord();
+        // Read as plain integers first; validate before casting to enum types.
+        // Casting an out-of-range integer directly to an enum with no fixed
+        // underlying type is undefined behavior (C++11 §7.2/8). Reject invalid
+        // values early so no downstream code ever touches an ill-formed enum.
+        const int raw_encoding = (int)m_strm.getDWord();
+        const int raw_maptype  = (int)m_strm.getDWord();
         m_maplength = m_strm.getDWord();
+
+        if (raw_encoding < RAS_OLD || raw_encoding > RAS_FORMAT_RGB)
+            return false;
+        if (raw_maptype < RMT_NONE || raw_maptype > RMT_EQUAL_RGB)
+            return false;
+
+        m_encoding = (SunRasType)raw_encoding;
+        m_maptype  = (SunRasMapType)raw_maptype;
 
         if( m_width > 0 && m_height > 0 &&
             (m_bpp == 1 || m_bpp == 8 || m_bpp == 24 || m_bpp == 32) &&
             (m_encoding == RAS_OLD || m_encoding == RAS_STANDARD ||
-             (m_type == RAS_BYTE_ENCODED && m_bpp == 8) || m_type == RAS_FORMAT_RGB) &&
+             (m_encoding == RAS_BYTE_ENCODED && m_bpp == 8) ||
+             (m_encoding == RAS_FORMAT_RGB && (m_bpp == 24 || m_bpp == 32))) &&
             ((m_maptype == RMT_NONE && m_maplength == 0) ||
              (m_maptype == RMT_EQUAL_RGB && m_maplength <= palSize && m_maplength > 0 && m_bpp <= 8)))
         {
@@ -129,14 +142,20 @@ bool  SunRasterDecoder::readHeader()
 bool  SunRasterDecoder::readData( Mat& img )
 {
     bool color = img.channels() > 1;
+    const bool source_is_rgb = m_encoding == RAS_FORMAT_RGB;
+    const bool output_is_rgb = m_use_rgb;
+    const bool swap_blue_and_red = source_is_rgb != output_is_rgb;
     uchar* data = img.ptr();
     size_t step = img.step;
     uchar  gray_palette[256] = {0};
     bool   result = false;
-    int  src_pitch = ((m_width*m_bpp + 7)/8 + 1) & -2;
     int  nch = color ? 3 : 1;
-    int  width3 = m_width*nch;
-    int  y;
+
+    const RowPitchParams pitch_params = calculateRowPitch(m_width, m_bpp, 2, "SunRaster");
+    const int src_pitch = pitch_params.src_pitch;
+    const size_t bytes_per_row = pitch_params.bytes_per_row;
+    const int width3 = calculateRowSize(m_width, nch, "SunRaster");
+    int y;
 
     if( m_offset < 0 || !m_strm.isOpened())
         return false;
@@ -144,7 +163,7 @@ bool  SunRasterDecoder::readData( Mat& img )
     AutoBuffer<uchar> _src(src_pitch + 32);
     uchar* src = _src.data();
 
-    if( !color && m_maptype == RMT_EQUAL_RGB )
+    if( !color && m_bpp <= 8 )
         CvtPaletteToGray( m_palette, gray_palette, 1 << m_bpp );
 
     try
@@ -155,7 +174,7 @@ bool  SunRasterDecoder::readData( Mat& img )
         {
         /************************* 1 BPP ************************/
         case 1:
-            if( m_type != RAS_BYTE_ENCODED )
+            if( m_encoding != RAS_BYTE_ENCODED )
             {
                 for( y = 0; y < m_height; y++, data += step )
                 {
@@ -169,7 +188,7 @@ bool  SunRasterDecoder::readData( Mat& img )
             }
             else
             {
-                uchar* line_end = src + (m_width*m_bpp + 7)/8;
+                uchar* line_end = src + bytes_per_row;
                 uchar* tsrc = src;
                 y = 0;
 
@@ -224,7 +243,7 @@ bad_decoding_1bpp:
             break;
         /************************* 8 BPP ************************/
         case 8:
-            if( m_type != RAS_BYTE_ENCODED )
+            if( m_encoding != RAS_BYTE_ENCODED )
             {
                 for( y = 0; y < m_height; y++, data += step )
                 {
@@ -289,7 +308,8 @@ bad_decoding_1bpp:
 
                     if( data == line_end )
                     {
-                        if( m_strm.getByte() != 0 )
+                        // Only odd-width 8-bit scanlines contain a padding byte.
+                        if( (m_width & 1) != 0 && m_strm.getByte() != 0 )
                             goto bad_decoding_end;
                         line_end += step;
                         data = line_end - width3;
@@ -310,7 +330,7 @@ bad_decoding_end:
 
                 if( color )
                 {
-                    if( m_type == RAS_FORMAT_RGB || m_use_rgb)
+                    if( swap_blue_and_red )
                         icvCvt_RGB2BGR_8u_C3R(src, 0, data, 0, Size(m_width,1) );
                     else
                         memcpy(data, src, std::min(step, (size_t)src_pitch));
@@ -318,7 +338,7 @@ bad_decoding_end:
                 else
                 {
                     icvCvt_BGR2Gray_8u_C3C1R(src, 0, data, 0, Size(m_width,1),
-                                              m_type == RAS_FORMAT_RGB ? 2 : 0 );
+                                              source_is_rgb ? 2 : 0 );
                 }
             }
             result = true;
@@ -333,10 +353,10 @@ bad_decoding_end:
 
                 if( color )
                     icvCvt_BGRA2BGR_8u_C4C3R( src + 4, 0, data, 0, Size(m_width,1),
-                                              (m_type == RAS_FORMAT_RGB || m_use_rgb) ? 2 : 0 );
+                                              swap_blue_and_red ? 2 : 0 );
                 else
                     icvCvt_BGRA2Gray_8u_C4C1R( src + 4, 0, data, 0, Size(m_width,1),
-                                               m_type == RAS_FORMAT_RGB ? 2 : 0 );
+                                               source_is_rgb ? 2 : 0 );
             }
             result = true;
             break;

@@ -173,7 +173,7 @@ bool pyopencv_to(PyObject* o, Mat& m, const ArgInfo& info)
 
     CV_LOG_DEBUG(NULL, "Incoming ndarray '" << info.name << "': ndims=" << ndims << "  _sizes=" << pycv_dumpArray(_sizes, ndims) << "  _strides=" << pycv_dumpArray(_strides, ndims));
 
-    bool ismultichannel = ndims == 3 && _sizes[2] <= CV_CN_MAX && !info.nd_mat;
+    bool ismultichannel = ndims == 3 && !info.nd_mat;
     if (pyopencv_Mat_TypePtr && PyObject_TypeCheck(o, pyopencv_Mat_TypePtr))
     {
         bool wrapChannels = false;
@@ -206,9 +206,9 @@ bool pyopencv_to(PyObject* o, Mat& m, const ArgInfo& info)
     if (ismultichannel)
     {
         int channels = ndims >= 1 ? (int)_sizes[ndims - 1] : 1;
-        if (channels > CV_CN_MAX)
+        if (channels < 1 || channels > CV_CN_MAX)
         {
-            failmsg("%s unable to wrap channels, too high (%d > CV_CN_MAX=%d)", info.name, (int)channels, (int)CV_CN_MAX);
+            failmsg("%s unable to wrap channels, invalid count (%d, must be in [1, %d])", info.name, (int)channels, (int)CV_CN_MAX);
             return false;
         }
         ndims--;

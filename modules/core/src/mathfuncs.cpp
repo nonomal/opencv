@@ -103,7 +103,7 @@ static bool ocl_math_op(InputArray _src1, InputArray _src2, OutputArray _dst, in
    Fast cube root by Ken Turkowski
    (http://www.worldserver.com/turk/computergraphics/papers.html)
 \* ************************************************************************** */
-float  cubeRoot( float value )
+CV_DISABLE_UBSAN float cubeRoot( float value )
 {
     CV_INSTRUMENT_REGION();
 
@@ -1675,16 +1675,8 @@ int cv::solveCubic( InputArray _coeffs, OutputArray _roots )
         }
         else if( d == 0 )
         {
-            if(R >= 0)
-            {
-                x0 = -2*pow(R, 1./3) - a1/3;
-                x1 = pow(R, 1./3) - a1/3;
-            }
-            else
-            {
-                x0 = 2*pow(-R, 1./3) - a1/3;
-                x1 = -pow(-R, 1./3) - a1/3;
-            }
+            x0 = -2*std::cbrt(R) - a1/3;
+            x1 = std::cbrt(R) - a1/3;
             x2 = 0;
             n = x0 == x1 ? 1 : 2;
             x1 = x0 == x1 ? 0 : x1;
@@ -1693,7 +1685,7 @@ int cv::solveCubic( InputArray _coeffs, OutputArray _roots )
         {
             double e;
             d = sqrt(-d);
-            e = pow(d + fabs(R), 1./3);
+            e = std::cbrt(d + fabs(R));
             if( R > 0 )
                 e = -e;
             x0 = (e + Q / e) - a1 * (1./3);
@@ -1756,7 +1748,40 @@ double cv::solvePoly( InputArray _coeffs0, OutputArray _roots0, int maxIters )
             break;
     }
 
-    C p(1, 0), r(1, 1);
+    // Related issue: https://github.com/opencv/opencv/issues/23644,
+    // This the initialization scheme of "Initial approximations in Durand-Kerner's root finding method" by Guggenheimer.
+    // https://link.springer.com/article/10.1007/BF01935059
+    // We put the initial points equidistantly on a circle on the complex plane. This code computes the circle radius as in the paper.
+    Mat absCoeffs(n + 1, 1, CV_64F);
+    for( i = 0; i <= n; i++ )
+        absCoeffs.at<double>(i) = abs(coeffs[i]);
+
+    int nonZeroCoeffs = 0;
+    Mat u(n, 1, CV_64F, Scalar(0)), v(n, 1, CV_64F, Scalar(0));
+    for( i = 0; i <= n; i++ )
+    {
+        double coeff = absCoeffs.at<double>(i);
+        if( coeff > DBL_EPSILON )
+        {
+            if( i != n )
+                u.at<double>(i) = 2.0 * pow(coeff / absCoeffs.at<double>(n), 1.0 / (n - i));
+            if( i != 0 )
+                v.at<double>(i - 1) = 0.5 * pow(absCoeffs.at<double>(0) / coeff, 1.0 / i);
+            nonZeroCoeffs++;
+        }
+    }
+    double scale = 1;
+    if( nonZeroCoeffs > 2 )
+    {
+        Point maxU, minV;
+        minMaxLoc(u, nullptr, nullptr, nullptr, &maxU);
+        minMaxLoc(v, nullptr, nullptr, &minV);
+        u.at<double>(maxU) = 0;
+        v.at<double>(minV) = 0;
+        scale = (sum(u).val[0] + sum(v).val[0]) / (2 * nonZeroCoeffs - 2);
+    }
+
+    C p(scale, 0), r(cos(CV_2PI / n), sin(CV_2PI / n));
 
     for( i = 0; i < n; i++ )
     {
@@ -1808,15 +1833,14 @@ double cv::solvePoly( InputArray _coeffs0, OutputArray _roots0, int maxIters )
                 if( num_same_root % 2 != 0){
                     Mat cube_coefs(4, 1, CV_64FC1);
                     Mat cube_roots(3, 1, CV_64FC2);
-                    cube_coefs.at<double>(3) = -(pow(old_num_re, 3));
-                    cube_coefs.at<double>(2) = -(15*pow(old_num_re, 2) + 27*pow(old_num_im, 2));
+                    cube_coefs.at<double>(3) = -(std::pow(old_num_re, 3));
+                    cube_coefs.at<double>(2) = -(15*std::pow(old_num_re, 2) + 27*std::pow(old_num_im, 2));
                     cube_coefs.at<double>(1) = -48*old_num_re;
                     cube_coefs.at<double>(0) = 64;
                     solveCubic(cube_coefs, cube_roots);
 
-                    if(cube_roots.at<double>(0) >= 0) num.re = pow(cube_roots.at<double>(0), 1./3);
-                    else num.re = -pow(-cube_roots.at<double>(0), 1./3);
-                    num.im = sqrt(pow(num.re, 2) / 3 - old_num_re / (3*num.re));
+                    num.re = std::cbrt(cube_roots.at<double>(0));
+                    num.im = sqrt(std::pow(num.re, 2) / 3 - old_num_re / (3*num.re));
                 }
             }
             roots[i] = p - num;

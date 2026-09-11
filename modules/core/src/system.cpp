@@ -423,6 +423,7 @@ struct HWFeatures
         g_hwFeatureNames[CPU_AVX_512VPOPCNTDQ] = "AVX512VPOPCNTDQ";
         g_hwFeatureNames[CPU_AVX_5124VNNIW] = "AVX5124VNNIW";
         g_hwFeatureNames[CPU_AVX_5124FMAPS] = "AVX5124FMAPS";
+        g_hwFeatureNames[CPU_AVX_VNNI] = "AVX_VNNI";
 
         g_hwFeatureNames[CPU_NEON] = "NEON";
         g_hwFeatureNames[CPU_NEON_DOTPROD] = "NEON_DOTPROD";
@@ -503,6 +504,11 @@ struct HWFeatures
             have[CV_CPU_AVX_5124VNNIW]    = (cpuid_data_ex[3] & (1<<2))  != 0;
             have[CV_CPU_AVX_5124FMAPS]    = (cpuid_data_ex[3] & (1<<3))  != 0;
 
+            // CPUID leaf 7, subleaf 1 for AVX-VNNI
+            int cpuid_data_ex1[4] = { 0, 0, 0, 0 };
+            CV_CPUID_X86(cpuid_data_ex1, 7, 1);
+            have[CV_CPU_AVX_VNNI]         = (cpuid_data_ex1[0] & (1<<4))  != 0;
+
             bool have_AVX_OS_support = true;
             bool have_AVX512_OS_support = true;
             if (!(cpuid_data[2] & (1<<27)))
@@ -527,6 +533,7 @@ struct HWFeatures
                 have[CV_CPU_FP16] = false;
                 have[CV_CPU_AVX2] = false;
                 have[CV_CPU_FMA3] = false;
+                have[CV_CPU_AVX_VNNI] = false;
             }
             if (!have_AVX_OS_support || !have_AVX512_OS_support)
             {
@@ -1111,12 +1118,19 @@ String tempfile( const char* suffix )
 #else
     // Use GUID-based naming to avoid race condition with GetTempFileNameA
     // See issue #19648
-    char temp_dir2[MAX_PATH] = { 0 };
+    wchar_t temp_dir2_w[MAX_PATH] = { 0 };
 
     if (temp_dir.empty())
     {
-        ::GetTempPathA(sizeof(temp_dir2), temp_dir2);
-        temp_dir = std::string(temp_dir2);
+        ::GetTempPathW(sizeof(temp_dir2_w)/sizeof(wchar_t), temp_dir2_w);
+        // Convert from UTF-16 to UTF-8 to support Unicode paths
+        int len = WideCharToMultiByte(CP_UTF8, 0, temp_dir2_w, -1, NULL, 0, NULL, NULL);
+        if (len > 0)
+        {
+            std::vector<char> utf8_buf(len);
+            WideCharToMultiByte(CP_UTF8, 0, temp_dir2_w, -1, utf8_buf.data(), len, NULL, NULL);
+            temp_dir = std::string(utf8_buf.data());
+        }
     }
 
     GUID g;
@@ -1282,8 +1296,7 @@ void error( const Exception& exc )
 
     if(breakOnError)
     {
-        static volatile int* p = 0;
-        *p = 0;
+        std::terminate();
     }
 
     throw exc;
@@ -2573,7 +2586,12 @@ public:
     IPPInitSingleton()
     {
         useIPP         = true;
+
+#if defined(OPENCV_ALGO_HINT_DEFAULT)
+        useIPP_NE      = OPENCV_ALGO_HINT_DEFAULT == cv::ALGO_HINT_APPROX;
+#else
         useIPP_NE      = false;
+#endif
         ippStatus      = 0;
         funcname       = NULL;
         filename       = NULL;

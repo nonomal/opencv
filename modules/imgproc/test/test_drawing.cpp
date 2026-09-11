@@ -554,9 +554,9 @@ TEST(Drawing, _914)
     line(img, Point(-5, 20), Point(260, 20), Scalar(0), 2, 4);
     line(img, Point(10, 0), Point(10, 255), Scalar(0), 2, 4);
 
-    double x0 = 0.0/pow(2.0, -2.0);
-    double x1 = 255.0/pow(2.0, -2.0);
-    double y = 30.5/pow(2.0, -2.0);
+    double x0 = 0.0/std::pow(2, -2);
+    double x1 = 255.0/std::pow(2, -2);
+    double y = 30.5/std::pow(2, -2);
 
     line(img, Point(int(x0), int(y)), Point(int(x1), int(y)), Scalar(0), 2, 4, 2);
 
@@ -1126,6 +1126,25 @@ TEST(Drawing, line_connectivity_regression_26413)
     // LINE_4 for a 10-pixel diagonal should have approximately 19 pixels
     // (needs both horizontal and vertical steps)
     EXPECT_GT(count4, 15) << "LINE_4 diagonal should have significantly more pixels due to staircase";
+}
+
+//This test ensures that the tipLength geometric ratio is strictly bounded  within the logical range (0.0, 1.0].
+TEST(Imgproc_Drawing, arrowedLine_tipLength_validation)
+{
+    // Create a simple miniature canvas for testing. Added cv:: prefix.
+    cv::Mat img = cv::Mat::zeros(100, 100, CV_8UC3);
+    cv::Point pt1(10, 10), pt2(90, 90);
+
+    // 1. Validate legal parameters: should not throw any exceptions (Normal cases)
+    EXPECT_NO_THROW(cv::arrowedLine(img, pt1, pt2, cv::Scalar(255, 255, 255), 1, 8, 0, 0.1));
+    EXPECT_NO_THROW(cv::arrowedLine(img, pt1, pt2, cv::Scalar(255, 255, 255), 1, 8, 0, 1.0));
+
+    // 2. Validate illegal parameters: expect cv::Exception to be thrown (Boundary violations)
+    // Negative ratio (tipLength <= 0.0)
+    EXPECT_THROW(cv::arrowedLine(img, pt1, pt2, cv::Scalar(255, 255, 255), 1, 8, 0, -0.5), cv::Exception);
+
+    // Overflow ratio (tipLength > 1.0)
+    EXPECT_THROW(cv::arrowedLine(img, pt1, pt2, cv::Scalar(255, 255, 255), 1, 8, 0, 1.5), cv::Exception);
 }
 
 }} // namespace
